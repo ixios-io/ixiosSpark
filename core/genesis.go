@@ -1,0 +1,758 @@
+// IxiosSpark is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+// This file is part of the IxiosSpark library, which builds upon the source code of the geth library.
+// The IxiosSpark source code is distributed with the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+// Copyright 2025 The ixiosSpark Authors, Copyright 2015-2024 The go-ethereum Authors (geth)
+// You should have received a copy of the GNU Lesser General Public License
+// with IxiosSpark. If not, see <http://www.gnu.org/licenses/>.
+
+package core
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/big"
+	"strings"
+
+	"github.com/holiman/uint256"
+	"github.com/ixios-io/ixiosSpark/common"
+	"github.com/ixios-io/ixiosSpark/common/hexutil"
+	"github.com/ixios-io/ixiosSpark/common/math"
+	"github.com/ixios-io/ixiosSpark/core/rawdb"
+	"github.com/ixios-io/ixiosSpark/core/state"
+	"github.com/ixios-io/ixiosSpark/core/types"
+	"github.com/ixios-io/ixiosSpark/crypto"
+	"github.com/ixios-io/ixiosSpark/kvdb"
+	"github.com/ixios-io/ixiosSpark/log"
+	"github.com/ixios-io/ixiosSpark/params"
+	"github.com/ixios-io/ixiosSpark/rlp"
+	"github.com/ixios-io/ixiosSpark/trie"
+	"github.com/ixios-io/ixiosSpark/triedb"
+	"github.com/ixios-io/ixiosSpark/triedb/pathdb"
+)
+
+//go:generate go run github.com/fjl/gencodec -type Genesis -field-override genesisSpecMarshaling -out gen_genesis.go
+
+var errGenesisNoConfig = errors.New("genesis has no chain configuration")
+
+// Deprecated: use types.GenesisAccount instead.
+type GenesisAccount = types.Account
+
+// Deprecated: use types.GenesisAlloc instead.
+type GenesisAlloc = types.GenesisAlloc
+
+// Genesis specifies the header fields, state of a genesis block. It also defines hard
+// fork switch-over blocks through the chain configuration.
+type Genesis struct {
+	Config     *params.ChainConfig `json:"config"`
+	Nonce      uint64              `json:"nonce"`
+	Timestamp  uint64              `json:"timestamp"`
+	ExtraData  []byte              `json:"extraData"`
+	GasLimit   uint64              `json:"gasLimit"   gencodec:"required"`
+	Difficulty *big.Int            `json:"difficulty" gencodec:"required"`
+	Mixhash    common.Hash         `json:"mixHash"`
+	Coinbase   common.Address      `json:"coinbase"`
+	Alloc      types.GenesisAlloc  `json:"alloc"      gencodec:"required"`
+
+	// These fields are used for consensus tests. Please don't use them
+	// in actual genesis blocks.
+	Number        uint64      `json:"number"`
+	GasUsed       uint64      `json:"gasUsed"`
+	ParentHash    common.Hash `json:"parentHash"`
+	BaseFee       *big.Int    `json:"baseFeePerGas"` // EIP-1559
+	ExcessBlobGas *uint64     `json:"excessBlobGas"` // EIP-4844
+	BlobGasUsed   *uint64     `json:"blobGasUsed"`   // EIP-4844
+}
+
+func ReadGenesis(db kvdb.Database) (*Genesis, error) {
+	var genesis Genesis
+	stored := rawdb.ReadCanonicalHash(db, 0)
+	if (stored == common.Hash{}) {
+		return nil, fmt.Errorf("invalid genesis hash in database: %x", stored)
+	}
+	blob := rawdb.ReadGenesisStateSpec(db, stored)
+	if blob == nil {
+		return nil, errors.New("genesis state missing from db")
+	}
+	if len(blob) != 0 {
+		if err := genesis.Alloc.UnmarshalJSON(blob); err != nil {
+			return nil, fmt.Errorf("could not unmarshal genesis state json: %s", err)
+		}
+	}
+	genesis.Config = rawdb.ReadChainConfig(db, stored)
+	if genesis.Config == nil {
+		return nil, errors.New("genesis config missing from db")
+	}
+	genesisBlock := rawdb.ReadBlock(db, stored, 0)
+	if genesisBlock == nil {
+		return nil, errors.New("genesis block missing from db")
+	}
+	genesisHeader := genesisBlock.Header()
+	genesis.Nonce = genesisHeader.Nonce.Uint64()
+	genesis.Timestamp = genesisHeader.Time
+	genesis.ExtraData = genesisHeader.Extra
+	genesis.GasLimit = genesisHeader.GasLimit
+	genesis.Difficulty = genesisHeader.Difficulty
+	genesis.Mixhash = genesisHeader.MixDigest
+	genesis.Coinbase = genesisHeader.Coinbase
+	genesis.BaseFee = genesisHeader.BaseFee
+	genesis.ExcessBlobGas = genesisHeader.ExcessBlobGas
+	genesis.BlobGasUsed = genesisHeader.BlobGasUsed
+
+	return &genesis, nil
+}
+
+// hashAlloc computes the state root according to the genesis specification.
+func hashAlloc(ga *types.GenesisAlloc, isVerkle bool) (common.Hash, error) {
+	// If a genesis-time verkle trie is requested, create a trie config
+	// with the verkle trie enabled so that the tree can be initialized
+	// as such.
+	var config *triedb.Config
+	if isVerkle {
+		config = &triedb.Config{
+			PathDB:   pathdb.Defaults,
+			IsVerkle: true,
+		}
+	}
+	// Create an ephemeral in-memory database for computing hash,
+	// all the derived states will be discarded to not pollute disk.
+	db := state.NewDatabaseWithConfig(rawdb.NewMemoryDatabase(), config)
+	statedb, err := state.New(types.EmptyRootHash, db, nil)
+	if err != nil {
+		return common.Hash{}, err
+	}
+	for addr, account := range *ga {
+		if account.Balance != nil {
+			statedb.AddBalance(addr, uint256.MustFromBig(account.Balance))
+		}
+		statedb.SetCode(addr, account.Code)
+		statedb.SetNonce(addr, account.Nonce)
+		for key, value := range account.Storage {
+			statedb.SetState(addr, key, value)
+		}
+	}
+	return statedb.Commit(0, false)
+}
+
+// flushAlloc is very similar with hash, but the main difference is all the generated
+// states will be persisted into the given database. Also, the genesis state
+// specification will be flushed as well.
+func flushAlloc(ga *types.GenesisAlloc, db kvdb.Database, triedb *triedb.Database, blockhash common.Hash) error {
+	statedb, err := state.New(types.EmptyRootHash, state.NewDatabaseWithNodeDB(db, triedb), nil)
+	if err != nil {
+		return err
+	}
+	for addr, account := range *ga {
+		if account.Balance != nil {
+			statedb.AddBalance(addr, uint256.MustFromBig(account.Balance))
+		}
+		statedb.SetCode(addr, account.Code)
+		statedb.SetNonce(addr, account.Nonce)
+		for key, value := range account.Storage {
+			statedb.SetState(addr, key, value)
+		}
+	}
+	root, err := statedb.Commit(0, false)
+	if err != nil {
+		return err
+	}
+	// Commit newly generated states into disk if it's not empty.
+	if root != types.EmptyRootHash {
+		if err := triedb.Commit(root, true); err != nil {
+			return err
+		}
+	}
+	// Marshal the genesis state specification and persist.
+	blob, err := json.Marshal(ga)
+	if err != nil {
+		return err
+	}
+	rawdb.WriteGenesisStateSpec(db, blockhash, blob)
+	return nil
+}
+
+// field type overrides for gencodec
+type genesisSpecMarshaling struct {
+	Nonce         math.HexOrDecimal64
+	Timestamp     math.HexOrDecimal64
+	ExtraData     hexutil.Bytes
+	GasLimit      math.HexOrDecimal64
+	GasUsed       math.HexOrDecimal64
+	Number        math.HexOrDecimal64
+	Difficulty    *math.HexOrDecimal256
+	Alloc         map[common.UnprefixedAddress]types.Account
+	BaseFee       *math.HexOrDecimal256
+	ExcessBlobGas *math.HexOrDecimal64
+	BlobGasUsed   *math.HexOrDecimal64
+}
+
+// GenesisMismatchError is raised when trying to overwrite an existing
+// genesis block with an incompatible one.
+type GenesisMismatchError struct {
+	Stored, New common.Hash
+}
+
+func (e *GenesisMismatchError) Error() string {
+	return fmt.Sprintf("database contains incompatible genesis (have %x, new %x)", e.Stored, e.New)
+}
+
+// ChainOverrides contains the changes to chain config.
+type ChainOverrides struct {
+	OverrideCancun *uint64
+	OverrideVerkle *uint64
+}
+
+// SetupGenesisBlock writes or updates the genesis block in db.
+// The block that will be used is:
+//
+//	                     genesis == nil       genesis != nil
+//	                  +------------------------------------------
+//	db has no genesis |  main-net default  |  genesis
+//	db has genesis    |  from DB           |  genesis (if compatible)
+//
+// The stored chain configuration will be updated if it is compatible (i.e. does not
+// specify a fork block below the local head block). In case of a conflict, the
+// error is a *params.ConfigCompatError and the new, unwritten config is returned.
+//
+// The returned chain configuration is never nil.
+func SetupGenesisBlock(db kvdb.Database, triedb *triedb.Database, genesis *Genesis) (*params.ChainConfig, common.Hash, error) {
+	return SetupGenesisBlockWithOverride(db, triedb, genesis, nil)
+}
+
+func SetupGenesisBlockWithOverride(db kvdb.Database, triedb *triedb.Database, genesis *Genesis, overrides *ChainOverrides) (*params.ChainConfig, common.Hash, error) {
+	applyOverrides := func(config *params.ChainConfig) {
+		if config != nil {
+			if overrides != nil && overrides.OverrideCancun != nil {
+				config.CancunTime = overrides.OverrideCancun
+			}
+			if overrides != nil && overrides.OverrideVerkle != nil {
+				config.VerkleTime = overrides.OverrideVerkle
+			}
+		}
+	}
+	// Just commit the new block if there is no stored genesis block.
+	stored := rawdb.ReadCanonicalHash(db, 0)
+	if (stored == common.Hash{}) {
+		if genesis == nil {
+			log.Info("Writing default mainnet genesis block")
+			genesis = DefaultGenesisBlock()
+		} else {
+			log.Info("Writing custom genesis block")
+		}
+		applyOverrides(genesis.Config)
+		block, err := genesis.Commit(db, triedb)
+		if err != nil {
+			return genesis.Config, common.Hash{}, err
+		}
+		return genesis.Config, block.Hash(), nil
+	}
+	// The genesis block is present(perhaps in ancient database) while the
+	// state database is not initialized yet. It can happen that the node
+	// is initialized with an external ancient store. Commit genesis state
+	// in this case.
+	header := rawdb.ReadHeader(db, stored, 0)
+	if header.Root != types.EmptyRootHash && !triedb.Initialized(header.Root) {
+		if genesis == nil {
+			genesis = DefaultGenesisBlock()
+		}
+		applyOverrides(genesis.Config)
+		// Ensure the stored genesis matches with the given one.
+		hash := genesis.ToBlock().Hash()
+		if hash != stored {
+			return genesis.Config, hash, &GenesisMismatchError{stored, hash}
+		}
+		block, err := genesis.Commit(db, triedb)
+		if err != nil {
+			return genesis.Config, hash, err
+		}
+		return genesis.Config, block.Hash(), nil
+	}
+	// Check whether the genesis block is already written.
+	if genesis != nil {
+		applyOverrides(genesis.Config)
+		hash := genesis.ToBlock().Hash()
+		if hash != stored {
+			return genesis.Config, hash, &GenesisMismatchError{stored, hash}
+		}
+	}
+	// Get the existing chain configuration.
+	newcfg := genesis.configOrDefault(stored)
+	applyOverrides(newcfg)
+	if err := newcfg.CheckConfigForkOrder(); err != nil {
+		return newcfg, common.Hash{}, err
+	}
+	storedcfg := rawdb.ReadChainConfig(db, stored)
+	if storedcfg == nil {
+		log.Warn("Found genesis block without chain config")
+		rawdb.WriteChainConfig(db, stored, newcfg)
+		return newcfg, stored, nil
+	}
+	storedData, _ := json.Marshal(storedcfg)
+	// Special case: if a private network is being used (no genesis and also no
+	// mainnet hash in the database), we must not apply the `configOrDefault`
+	// chain config as that would be AllProtocolChanges (applying any new fork
+	// on top of an existing private network genesis block). In that case, only
+	// apply the overrides.
+	if genesis == nil && stored != params.MainnetGenesisHash {
+		newcfg = storedcfg
+		applyOverrides(newcfg)
+	}
+	// Check config compatibility and write the config. Compatibility errors
+	// are returned to the caller unless we're already at block zero.
+	head := rawdb.ReadHeadHeader(db)
+	if head == nil {
+		return newcfg, stored, errors.New("missing head header")
+	}
+	compatErr := storedcfg.CheckCompatible(newcfg, head.Number.Uint64(), head.Time)
+	if compatErr != nil && ((head.Number.Uint64() != 0 && compatErr.RewindToBlock != 0) || (head.Time != 0 && compatErr.RewindToTime != 0)) {
+		return newcfg, stored, compatErr
+	}
+	// Don't overwrite if the old is identical to the new
+	if newData, _ := json.Marshal(newcfg); !bytes.Equal(storedData, newData) {
+		rawdb.WriteChainConfig(db, stored, newcfg)
+	}
+	return newcfg, stored, nil
+}
+
+// LoadChainConfig loads the stored chain config if it is already present in
+// database, otherwise, return the config in the provided genesis specification.
+func LoadChainConfig(db kvdb.Database, genesis *Genesis) (*params.ChainConfig, error) {
+	// Load the stored chain config from the database. It can be nil
+	// in case the database is empty. Notably, we only care about the
+	// chain config corresponds to the canonical chain.
+	stored := rawdb.ReadCanonicalHash(db, 0)
+	if stored != (common.Hash{}) {
+		storedcfg := rawdb.ReadChainConfig(db, stored)
+		if storedcfg != nil {
+			return storedcfg, nil
+		}
+	}
+	// Load the config from the provided genesis specification
+	if genesis != nil {
+		// Reject invalid genesis spec without valid chain config
+		if genesis.Config == nil {
+			return nil, errGenesisNoConfig
+		}
+		// If the canonical genesis header is present, but the chain
+		// config is missing(initialize the empty leveldb with an
+		// external ancient chain segment), ensure the provided genesis
+		// is matched.
+		if stored != (common.Hash{}) && genesis.ToBlock().Hash() != stored {
+			return nil, &GenesisMismatchError{stored, genesis.ToBlock().Hash()}
+		}
+		return genesis.Config, nil
+	}
+	// There is no stored chain config and no new config provided,
+	// In this case the default chain config(mainnet) will be used
+	return params.MainnetChainConfig, nil
+}
+
+func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
+	switch {
+	case g != nil:
+		return g.Config
+	case ghash == params.MainnetGenesisHash:
+		return params.MainnetChainConfig
+	case ghash == params.NeoDawnGenesisHash:
+		return params.NeoDawnChainConfig
+	case ghash == params.AetherForgeGenesisHash:
+		return params.AetherForgeChainConfig
+	case ghash == params.AetherBloomGenesisHash:
+		return params.AetherBloomChainConfig
+	default:
+		return params.MainnetChainConfig
+	}
+}
+
+// IsVerkle indicates whether the state is already stored in a verkle
+// tree at genesis time.
+func (g *Genesis) IsVerkle() bool {
+	return g.Config.IsVerkle(new(big.Int).SetUint64(g.Number), g.Timestamp)
+}
+
+// ToBlock returns the genesis block according to genesis specification.
+func (g *Genesis) ToBlock() *types.Block {
+	root, err := hashAlloc(&g.Alloc, g.IsVerkle())
+	if err != nil {
+		panic(err)
+	}
+	head := &types.Header{
+		Number:     new(big.Int).SetUint64(g.Number),
+		Nonce:      types.EncodeNonce(g.Nonce),
+		Time:       g.Timestamp,
+		ParentHash: g.ParentHash,
+		Extra:      g.ExtraData,
+		GasLimit:   g.GasLimit,
+		GasUsed:    g.GasUsed,
+		BaseFee:    g.BaseFee,
+		Difficulty: g.Difficulty,
+		MixDigest:  g.Mixhash,
+		Coinbase:   g.Coinbase,
+		Root:       root,
+	}
+	if g.GasLimit == 0 {
+		head.GasLimit = params.GenesisGasLimit
+	}
+	if g.Difficulty == nil && g.Mixhash == (common.Hash{}) {
+		head.Difficulty = params.GenesisDifficulty
+	}
+	if g.Config != nil && g.Config.IsLondon(common.Big0) {
+		if g.BaseFee != nil {
+			head.BaseFee = g.BaseFee
+		} else {
+			head.BaseFee = new(big.Int).SetUint64(params.InitialBaseFee)
+		}
+	}
+	var withdrawals []*types.Withdrawal
+	if conf := g.Config; conf != nil {
+		num := big.NewInt(int64(g.Number))
+		if conf.IsShanghai(num, g.Timestamp) {
+			head.WithdrawalsHash = &types.EmptyWithdrawalsHash
+			withdrawals = make([]*types.Withdrawal, 0)
+		}
+		if conf.IsCancun(num, g.Timestamp) {
+			// EIP-4788: The parentBeaconBlockRoot of the genesis block is always
+			// the zero hash. This is because the genesis block does not have a parent
+			// by definition.
+			head.ParentBeaconRoot = new(common.Hash)
+			// EIP-4844 fields
+			head.ExcessBlobGas = g.ExcessBlobGas
+			head.BlobGasUsed = g.BlobGasUsed
+			if head.ExcessBlobGas == nil {
+				head.ExcessBlobGas = new(uint64)
+			}
+			if head.BlobGasUsed == nil {
+				head.BlobGasUsed = new(uint64)
+			}
+		}
+	}
+	return types.NewBlock(head, nil, nil, nil, trie.NewStackTrie(nil)).WithWithdrawals(withdrawals)
+}
+
+// Commit writes the block and state of a genesis specification to the database.
+// The block is committed as the canonical head block.
+func (g *Genesis) Commit(db kvdb.Database, triedb *triedb.Database) (*types.Block, error) {
+	block := g.ToBlock()
+	if block.Number().Sign() != 0 {
+		return nil, errors.New("can't commit genesis block with number > 0")
+	}
+	config := g.Config
+	if config == nil {
+		config = params.MainnetChainConfig
+	}
+	if err := config.CheckConfigForkOrder(); err != nil {
+		return nil, err
+	}
+	if config.Clique != nil && len(block.Extra()) < 32+crypto.SignatureLength {
+		return nil, errors.New("can't start clique chain without signers")
+	}
+	// All the checks has passed, flushAlloc the states derived from the genesis
+	// specification as well as the specification itself into the provided
+	// database.
+	if err := flushAlloc(&g.Alloc, db, triedb, block.Hash()); err != nil {
+		return nil, err
+	}
+	rawdb.WriteTd(db, block.Hash(), block.NumberU64(), block.Difficulty())
+	rawdb.WriteBlock(db, block)
+	rawdb.WriteReceipts(db, block.Hash(), block.NumberU64(), nil)
+	rawdb.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
+	rawdb.WriteHeadBlockHash(db, block.Hash())
+	rawdb.WriteHeadFastBlockHash(db, block.Hash())
+	rawdb.WriteHeadHeaderHash(db, block.Hash())
+	rawdb.WriteChainConfig(db, block.Hash(), config)
+	return block, nil
+}
+
+// MustCommit writes the genesis block and state to db, panicking on error.
+// The block is committed as the canonical head block.
+func (g *Genesis) MustCommit(db kvdb.Database, triedb *triedb.Database) *types.Block {
+	block, err := g.Commit(db, triedb)
+	if err != nil {
+		panic(err)
+	}
+	return block
+}
+
+// buildExtraData constructs a typical clique‑style ExtraData layout:
+//
+// Layout:
+//   - 32 bytes vanity
+//   - for each validator: 32 bytes address + MKS chunkSize
+//   - 65 bytes of zero signature for genesis
+func buildExtraData(validators []ValidatorMKS) []byte {
+	vanity := make([]byte, 32) // 32 zero bytes
+	sig := make([]byte, 65)    // legacy signature
+	size := 32 + len(validators)*chunkSize + 65
+
+	extra := make([]byte, 0, size)
+	extra = append(extra, vanity...)
+
+	for _, val := range validators {
+		extra = append(extra, val.Address[:]...) // 32 bytes
+		extra = append(extra, val.MKSData...)
+	}
+
+	extra = append(extra, sig...)
+	return extra
+}
+
+// DefaultGenesisBlock returns the Ixios mainnet genesis block.
+func DefaultGenesisBlock() *Genesis {
+	// Parse the embedded validators
+	vals, err := parseEmbeddedValidators()
+	if err != nil {
+		panic(err)
+	}
+	extra := buildExtraData(vals)
+
+	genesisAlloc, err := ParseGenesisAllocData()
+	if err != nil {
+		panic(err)
+	}
+
+	return &Genesis{
+		Config: &params.ChainConfig{
+			ChainID:             big.NewInt(1),
+			HomesteadBlock:      big.NewInt(0),
+			DAOForkBlock:        nil,
+			DAOForkSupport:      false,
+			EIP150Block:         big.NewInt(0),
+			EIP155Block:         big.NewInt(0),
+			EIP158Block:         big.NewInt(0),
+			ByzantiumBlock:      big.NewInt(0),
+			ConstantinopleBlock: big.NewInt(0),
+			PetersburgBlock:     big.NewInt(0),
+			IstanbulBlock:       big.NewInt(0),
+			MuirGlacierBlock:    nil,
+			BerlinBlock:         big.NewInt(0),
+			LondonBlock:         big.NewInt(0),
+			ArrowGlacierBlock:   nil,
+			GrayGlacierBlock:    nil,
+			ShanghaiTime:        nil,
+			CancunTime:          nil,
+			Clique: &params.CliqueConfig{
+				Period: 998,
+				Epoch:  86400,
+			},
+		},
+		Timestamp:  1743897540000,
+		Nonce:      0xffffffffffffffff,
+		ExtraData:  extra,
+		GasLimit:   2288000,
+		Difficulty: big.NewInt(1),
+		Alloc:      genesisAlloc,
+	}
+}
+
+// DefaultAetherForgeGenesisBlock returns the AetherForge network genesis block.
+func DefaultAetherForgeGenesisBlock() *Genesis {
+	emptyMKS := make([]byte, 2656) // MKS contains secp256k1, Dilithium5, and SPHINCS256 public keys. Unused on Aether testnets.
+	v := ValidatorMKS{common.HexToAddress("00000000000045737501bcbd63b65e5c3829e1e6f6a88d5abf577d16b2194054"), emptyMKS}
+	vals := make([]ValidatorMKS, 0, 1)
+	vals = append(vals, v)
+	extra := buildExtraData(vals)
+
+	totalSupply := big.NewInt(0)
+	totalSupply.SetString("10000000000000000000000000000", 10)
+	totalSupplyAddress := "000000000000fe75b7c87205cf6c3fb66c7b6ff5d3c4a4f8df61ccdab5273fb0"
+
+	return &Genesis{
+		Config: &params.ChainConfig{
+			ChainID:             big.NewInt(2),
+			HomesteadBlock:      big.NewInt(0),
+			DAOForkBlock:        nil,
+			DAOForkSupport:      false,
+			EIP150Block:         big.NewInt(0),
+			EIP155Block:         big.NewInt(0),
+			EIP158Block:         big.NewInt(0),
+			ByzantiumBlock:      big.NewInt(0),
+			ConstantinopleBlock: big.NewInt(0),
+			PetersburgBlock:     big.NewInt(0),
+			IstanbulBlock:       big.NewInt(0),
+			MuirGlacierBlock:    nil,
+			BerlinBlock:         big.NewInt(0),
+			LondonBlock:         big.NewInt(0),
+			ArrowGlacierBlock:   nil,
+			GrayGlacierBlock:    nil,
+			ShanghaiTime:        nil,
+			CancunTime:          nil,
+			Clique: &params.CliqueConfig{
+				Period: 998,
+				Epoch:  86400,
+			},
+		},
+		Timestamp:  1744728000000,
+		Nonce:      0xffffffffffffffff,
+		ExtraData:  extra,
+		GasLimit:   2288000,
+		Difficulty: big.NewInt(1),
+		Alloc: types.GenesisAlloc{
+			common.HexToAddress(totalSupplyAddress): {
+				Balance: totalSupply,
+			},
+		},
+	}
+}
+
+// DefaultAetherBloomGenesisBlock returns the AetherBloom network genesis block.
+func DefaultAetherBloomGenesisBlock() *Genesis {
+	// Parse the embedded validators
+	vals, err := parseEmbeddedValidators()
+	if err != nil {
+		panic(err)
+	}
+	extra := buildExtraData(vals)
+	totalSupply := big.NewInt(0)
+	totalSupply.SetString("10000000000000000000000000000", 10)
+	totalSupplyAddress := "00000000000051ea86df074d5d36f9c40bfdae3e26c44fe1826c1f4051f40851"
+
+	return &Genesis{
+		Config: &params.ChainConfig{
+			ChainID:             big.NewInt(486662),
+			HomesteadBlock:      big.NewInt(0),
+			DAOForkBlock:        nil,
+			DAOForkSupport:      false,
+			EIP150Block:         big.NewInt(0),
+			EIP155Block:         big.NewInt(0),
+			EIP158Block:         big.NewInt(0),
+			ByzantiumBlock:      big.NewInt(0),
+			ConstantinopleBlock: big.NewInt(0),
+			PetersburgBlock:     big.NewInt(0),
+			IstanbulBlock:       big.NewInt(0),
+			MuirGlacierBlock:    nil,
+			BerlinBlock:         big.NewInt(0),
+			LondonBlock:         big.NewInt(0),
+			ArrowGlacierBlock:   nil,
+			GrayGlacierBlock:    nil,
+			ShanghaiTime:        nil,
+			CancunTime:          nil,
+			Clique: &params.CliqueConfig{
+				Period: 998,
+				Epoch:  86400,
+			},
+		},
+		Timestamp:  1743825000000,
+		Nonce:      0xffffffffffffffff,
+		ExtraData:  extra,
+		GasLimit:   2288000,
+		Difficulty: big.NewInt(1),
+		Alloc: types.GenesisAlloc{
+			common.HexToAddress(totalSupplyAddress): {
+				Balance: totalSupply,
+			},
+		},
+	}
+}
+
+// DefaultNeoDawnGenesisBlock returns the NeoDawn network genesis block.
+func DefaultNeoDawnGenesisBlock() *Genesis {
+	total_supply := big.NewInt(0)
+
+	total_supply.SetString("10000000000000000000000000000", 10)
+	totalSupplyAddress := "67470c91F957B379ae35CE99F920B7Db3eBE2059"
+	genesisValidator := "6A5AC309C528CC1C3D36abE37D7979aC19417840"
+
+	return &Genesis{
+		Config: &params.ChainConfig{
+			ChainID:             big.NewInt(229969),
+			HomesteadBlock:      big.NewInt(0),
+			EIP150Block:         big.NewInt(0),
+			EIP155Block:         big.NewInt(0),
+			EIP158Block:         big.NewInt(0),
+			ByzantiumBlock:      big.NewInt(0),
+			ConstantinopleBlock: big.NewInt(0),
+			PetersburgBlock:     big.NewInt(0),
+			IstanbulBlock:       big.NewInt(0),
+			BerlinBlock:         big.NewInt(0),
+			LondonBlock:         big.NewInt(0),
+			Clique: &params.CliqueConfig{
+				Period: 998,
+				Epoch:  86400,
+			},
+		},
+		Nonce: 0xffffffffffffffff,
+		ExtraData: hexutil.MustDecode(
+			"0x" +
+				"0000000000000000000000000000000000000000000000000000000000000000" + // 32-byte prefix
+				genesisValidator +
+				"0000000000000000000000000000000000000000" +
+				"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", // empty signature
+		),
+		GasLimit:   2288000,
+		Difficulty: big.NewInt(1),
+		Alloc: map[common.Address]GenesisAccount{
+			common.HexToAddress(totalSupplyAddress): {
+				Balance: total_supply,
+			},
+		},
+	}
+}
+
+// DeveloperGenesisBlock returns the 'ixiosSpark --dev' genesis block.
+func DeveloperGenesisBlock(gasLimit uint64, faucet *common.Address) *Genesis {
+	// Override the default period to the user requested one
+	config := *params.AllDevChainProtocolChanges
+
+	// Assemble and return the genesis with the precompiles and faucet pre-funded
+	genesis := &Genesis{
+		Config:     &config,
+		GasLimit:   gasLimit,
+		BaseFee:    big.NewInt(params.InitialBaseFee),
+		Difficulty: big.NewInt(1),
+		Alloc: map[common.Address]types.Account{
+			common.BytesToAddress([]byte{1}): {Balance: big.NewInt(1)}, // ECRecover
+			common.BytesToAddress([]byte{2}): {Balance: big.NewInt(1)}, // SHA256
+			common.BytesToAddress([]byte{3}): {Balance: big.NewInt(1)}, // RIPEMD
+			common.BytesToAddress([]byte{4}): {Balance: big.NewInt(1)}, // Identity
+			common.BytesToAddress([]byte{5}): {Balance: big.NewInt(1)}, // ModExp
+			common.BytesToAddress([]byte{6}): {Balance: big.NewInt(1)}, // ECAdd
+			common.BytesToAddress([]byte{7}): {Balance: big.NewInt(1)}, // ECScalarMul
+			common.BytesToAddress([]byte{8}): {Balance: big.NewInt(1)}, // ECPairing
+			common.BytesToAddress([]byte{9}): {Balance: big.NewInt(1)}, // BLAKE2b
+		},
+	}
+	if faucet != nil {
+		genesis.Alloc[*faucet] = types.Account{Balance: new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(9))}
+	}
+	return genesis
+}
+
+func decodePrealloc(data string) types.GenesisAlloc {
+	var p []struct {
+		Addr    *big.Int
+		Balance *big.Int
+		Misc    *struct {
+			Nonce uint64
+			Code  []byte
+			Slots []struct {
+				Key common.Hash
+				Val common.Hash
+			}
+		} `rlp:"optional"`
+	}
+	if err := rlp.NewStream(strings.NewReader(data), 0).Decode(&p); err != nil {
+		panic(err)
+	}
+	ga := make(types.GenesisAlloc, len(p))
+	for _, account := range p {
+		acc := types.Account{Balance: account.Balance}
+		if account.Misc != nil {
+			acc.Nonce = account.Misc.Nonce
+			acc.Code = account.Misc.Code
+
+			acc.Storage = make(map[common.Hash]common.Hash)
+			for _, slot := range account.Misc.Slots {
+				acc.Storage[slot.Key] = slot.Val
+			}
+		}
+		ga[common.BigToAddress(account.Addr)] = acc
+	}
+	return ga
+}

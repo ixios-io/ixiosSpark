@@ -1,0 +1,61 @@
+// IxiosSpark is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+// This file is part of the IxiosSpark library, which builds upon the source code of the geth library.
+// The IxiosSpark source code is distributed with the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU Lesser General Public License for more details.
+// Copyright 2015-2024 The go-ethereum Authors (geth)
+// You should have received a copy of the GNU Lesser General Public License
+// with IxiosSpark. If not, see <http://www.gnu.org/licenses/>.
+
+package trie
+
+import (
+	"github.com/ixios-io/ixiosSpark/rlp"
+)
+
+func nodeToBytes(n node) []byte {
+	w := rlp.NewEncoderBuffer(nil)
+	n.encode(w)
+	result := w.ToBytes()
+	w.Flush()
+	return result
+}
+
+func (n *fullNode) encode(w rlp.EncoderBuffer) {
+	offset := w.List()
+	for _, c := range n.Children {
+		if c != nil {
+			c.encode(w)
+		} else {
+			w.Write(rlp.EmptyString)
+		}
+	}
+	w.ListEnd(offset)
+}
+
+func (n *shortNode) encode(w rlp.EncoderBuffer) {
+	offset := w.List()
+	w.WriteBytes(n.Key)
+	if n.Val != nil {
+		n.Val.encode(w)
+	} else {
+		w.Write(rlp.EmptyString)
+	}
+	w.ListEnd(offset)
+}
+
+func (n hashNode) encode(w rlp.EncoderBuffer) {
+	w.WriteBytes(n)
+}
+
+func (n valueNode) encode(w rlp.EncoderBuffer) {
+	w.WriteBytes(n)
+}
+
+func (n rawNode) encode(w rlp.EncoderBuffer) {
+	w.Write(n)
+}
