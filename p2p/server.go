@@ -50,14 +50,14 @@ const (
 	defaultDialRatio       = 64
 
 	// This time limits inbound connection attempts per source IP.
-	inboundThrottleTime = 500 * time.Millisecond
+	inboundThrottleTime = 350 * time.Millisecond
 
 	// Maximum time allowed for reading a complete message.
 	// This is effectively the amount of time a connection can be idle.
-	frameReadTimeout = 3 * time.Second
+	frameReadTimeout = 1500 * time.Millisecond
 
 	// Maximum amount of time allowed for writing a complete message.
-	frameWriteTimeout = 1500 * time.Millisecond
+	frameWriteTimeout = 850 * time.Millisecond
 )
 
 var (

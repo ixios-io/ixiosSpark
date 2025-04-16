@@ -327,6 +327,7 @@ func (d *dialScheduler) readNodes(it enode.Iterator) {
 // peers are connected because users should only see it while their client is starting up
 // or comes back online.
 func (d *dialScheduler) logStats() {
+	d.log.Info("Dialer Stats", "maxDialPeers", d.maxDialPeers, "peercount", len(d.peers), "tried", d.doneSinceLastLog, "static", len(d.static))
 	now := d.clock.Now()
 	if d.lastStatsLog.Add(dialStatsLogInterval) > now {
 		return

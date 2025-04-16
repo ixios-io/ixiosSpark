@@ -66,7 +66,7 @@ var DefaultConfig = Config{
 	GraphQLVirtualHosts:  []string{"localhost"},
 	P2P: p2p.Config{
 		ListenAddr: ":38383",
-		MaxPeers:   50,
+		MaxPeers:   128,
 		NAT:        nat.Any(),
 	},
 	DBEngine: "", // Use whatever exists, will default to Pebble if non-existent and supported
@@ -80,17 +80,17 @@ func DefaultDataDir() string {
 	if home != "" {
 		switch runtime.GOOS {
 		case "darwin":
-			return filepath.Join(home, "Library", "IBIT_L1")
+			return filepath.Join(home, "Library", "ixiosSpark")
 		case "windows":
 			// We used to put everything in %HOME%\AppData\Roaming, but this caused
 			// problems with non-typical setups. If this fallback location exists and
 			// is non-empty, use it, otherwise DTRT and check %LOCALAPPDATA%.
-			fallback := filepath.Join(home, "AppData", "Roaming", "IBIT_L1")
+			fallback := filepath.Join(home, "AppData", "Roaming", "")
 			appdata := windowsAppData()
 			if appdata == "" || isNonEmptyDir(fallback) {
 				return fallback
 			}
-			return filepath.Join(appdata, "IBIT_L1")
+			return filepath.Join(appdata, "ixiosSpark")
 		default:
 			return filepath.Join(home, ".ixiosSpark")
 		}
