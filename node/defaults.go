@@ -66,7 +66,7 @@ var DefaultConfig = Config{
 	GraphQLVirtualHosts:  []string{"localhost"},
 	P2P: p2p.Config{
 		ListenAddr: ":38383",
-		MaxPeers:   128,
+		MaxPeers:   64,
 		NAT:        nat.Any(),
 	},
 	DBEngine: "", // Use whatever exists, will default to Pebble if non-existent and supported
