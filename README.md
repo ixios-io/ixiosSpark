@@ -32,7 +32,7 @@ A build script for Ubuntu 24.04 LTS and Ubuntu 24.10 has been provided which wil
 After building from source, ixiosSpark can be installed with:
 
 ```shell
-./install.sh
+sudo ./install.sh
 ```
 
 For other operating systems, we suggest using a pre-compiled binary or docker. See `Quick Install` or `Docker Install`.
