@@ -614,6 +614,7 @@ func (w *worker) resultLoop() {
 			)
 			if !w.pendingMu.TryRLock() {
 				log.Error("Sealer worker failed to get RLock on pending task", "task", block)
+				continue
 			}
 			task, exist := w.pendingTasks[sealhash]
 			w.pendingMu.RUnlock()
