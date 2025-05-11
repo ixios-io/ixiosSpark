@@ -1,0 +1,10 @@
+/build/bin
+/build/cache
+.idea
+*.iml
+.project
+.settings
+.vscode
+.DS_Store
+*/**/.DS_Store
+./*.tar.gz
