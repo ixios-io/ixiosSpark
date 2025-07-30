@@ -17,7 +17,6 @@ import (
 	"errors"
 	"math"
 	"math/big"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -439,15 +438,6 @@ func (h *handler) Stop() {
 	}()
 
 	log.Info("Ixios protocol stopped")
-
-	// if it takes more than 10 seconds to cleanup, just do an unclean shutdown:
-	select {
-	case <-done:
-		os.Exit(0)
-		return
-	case <-time.After(10 * time.Second):
-		os.Exit(0)
-	}
 }
 
 func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
