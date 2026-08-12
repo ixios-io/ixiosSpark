@@ -79,6 +79,9 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
 		}
+		if err := ValidateTxAddressFormats(p.config, header.Number, tx, msg.From); err != nil {
+			return nil, nil, 0, fmt.Errorf("could not apply tx %d [%v]: %w", i, tx.Hash().Hex(), err)
+		}
 		statedb.SetTxContext(tx.Hash(), i)
 		receipt, err := applyTransaction(msg, p.config, gp, statedb, blockNumber, blockHash, tx, usedGas, vmenv)
 		if err != nil {
@@ -99,12 +102,14 @@ func (p *StateProcessor) Process(block *types.Block, statedb *state.StateDB, cfg
 }
 
 func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, statedb *state.StateDB, blockNumber *big.Int, blockHash common.Hash, tx *types.Transaction, usedGas *uint64, evm *vm.EVM) (*types.Receipt, error) {
-	// Enforce minimum gas price of 1 zeta, which varies by blockNumber:
-	minZeta := zeta.CalculateZetaValue(blockNumber)
-	if msg.GasPrice == nil || msg.GasPrice.Cmp(minZeta) < 0 {
+	// Enforce the fork-aware minimum gas price in zeta units.
+	minimumGasPrice := zeta.CalculateMinimumGasPrice(config, blockNumber)
+	requiredZeta := zeta.MinimumGasPriceZeta(config, blockNumber)
+	oneZeta := zeta.CalculateZetaValue(blockNumber)
+	if msg.GasPrice == nil || msg.GasPrice.Cmp(minimumGasPrice) < 0 {
 		return nil, fmt.Errorf(
-			"transaction gas price %s is below the required minimum of 1 zeta (1 zeta = %s wei)",
-			msg.GasPrice, minZeta,
+			"transaction gas price %s is below the required minimum of %d zeta (%s wei total, 1 zeta = %s wei)",
+			msg.GasPrice, requiredZeta, minimumGasPrice, oneZeta,
 		)
 	}
 
@@ -169,6 +174,9 @@ func applyTransaction(msg *Message, config *params.ChainConfig, gp *GasPool, sta
 func ApplyTransaction(config *params.ChainConfig, bc ChainContext, author *common.Address, gp *GasPool, statedb *state.StateDB, header *types.Header, tx *types.Transaction, usedGas *uint64, cfg vm.Config) (*types.Receipt, error) {
 	msg, err := TransactionToMessage(tx, types.MakeSigner(config, header.Number, header.Time), header.BaseFee)
 	if err != nil {
+		return nil, err
+	}
+	if err := ValidateTxAddressFormats(config, header.Number, tx, msg.From); err != nil {
 		return nil, err
 	}
 	// Create a new context to be used in the EVM environment

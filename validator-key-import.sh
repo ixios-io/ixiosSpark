@@ -103,7 +103,6 @@ echo "$PASSWORD" > ./password_file.temp
 echo "$SECP256K1_PRIVATE_KEY" > ./key_file.temp
 
 # Import just the secp256k1 key for now
-ixiosSpark --aetherBloom account import --password ./password_file.temp ./key_file.temp # aetherbloom testnet
 IMPORT_OUTPUT=$(ixiosSpark account import --password ./password_file.temp ./key_file.temp) # mainnet
 VALIDATOR_ADDRESS=$(echo "$IMPORT_OUTPUT" | grep -o '{[0-9a-fA-F]\{64\}}')
 if [ -n "$VALIDATOR_ADDRESS" ]; then

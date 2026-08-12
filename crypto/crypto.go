@@ -112,7 +112,7 @@ func CreateAddress(b common.Address, nonce uint64) common.Address {
 // CreateAddress2 creates an ethereum address given the address bytes, initial
 // contract code hash and a salt.
 func CreateAddress2(b common.Address, salt [32]byte, inithash []byte) common.Address {
-	return common.BytesToAddress(Keccak256([]byte{0xff}, b.Bytes(), salt[:], inithash)[12:])
+	return common.BytesToAddress(Keccak256([]byte{0xff}, b.CompactBytes(), salt[:], inithash)[12:])
 }
 
 // ToECDSA creates a private key with the given D value.
@@ -274,10 +274,34 @@ func ValidateSignatureValues(v byte, r, s *big.Int, homestead bool) bool {
 
 func PubkeyToAddress(p ecdsa.PublicKey) common.Address {
 	pubBytes := FromECDSAPub(&p)
-	hash := Keccak256(pubBytes[1:])
-	var result [32]byte
-	copy(result[6:], hash[6:]) // 26 byte hash
-	return common.BytesToAddress(result[:])
+	return PubkeyBytesToAddressWithType(0x00, pubBytes[1:])
+}
+
+// MLDSA87PubkeyToAddress derives the IxiosSpark MLDSA87 address from the
+// SHA3-512 hash of the public key. The MLDSA87 address uses the trailing
+// 48 bytes of the SHA3-512 digest.
+func MLDSA87PubkeyToAddress(pub []byte) common.Address {
+	return PubkeyBytesToAddressWithType(0x01, pub)
+}
+
+func PubkeyBytesToAddressWithType(sigType byte, pub []byte) common.Address {
+	var result common.Address
+	switch sigType {
+	case 0x00:
+		hash := Keccak256(pub)
+		copy(result[common.ECDSAZeroPrefixLength:], hash[len(hash)-common.ECDSAAddressHashLength:])
+	case 0x01:
+		digest := sha3.New512()
+		digest.Write(pub)
+		hash := digest.Sum(nil)
+		copy(result[:], hash[len(hash)-common.AddressLength:])
+	default:
+		digest := sha3.New512()
+		digest.Write(pub)
+		hash := digest.Sum(nil)
+		copy(result[:], hash[:common.AddressLength])
+	}
+	return result
 }
 
 func zeroBytes(bytes []byte) {

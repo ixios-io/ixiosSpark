@@ -27,6 +27,10 @@ import (
 )
 
 var (
+	AccountSignatureTypeFlag = &cli.StringFlag{
+		Name:  "signature-type",
+		Usage: "Signature type for the new account (ecdsa or mldsa87)",
+	}
 	accountCommand = &cli.Command{
 		Name:  "account",
 		Usage: "Manage accounts",
@@ -70,6 +74,7 @@ Print a short summary of all accounts`,
 					DataDirFlag,
 					KeyStoreDirFlag,
 					PasswordFileFlag,
+					AccountSignatureTypeFlag,
 				},
 				Description: `
     ixiosSpark account new
@@ -278,6 +283,25 @@ func ambiguousAddrRecovery(ks *keystore.KeyStore, err *keystore.AmbiguousAddrErr
 // accountCreate creates a new account into the keystore defined by the CLI flags.
 func accountCreate(ctx *cli.Context) error {
 	cfg := loadBaseConfig(ctx)
+
+	sigType := ctx.String(AccountSignatureTypeFlag.Name)
+	if sigType == "" {
+		fmt.Println("Select key algorithm:")
+		fmt.Println("  1) ECDSA     (secp256k1)")
+		fmt.Println("  2) ML-DSA-87 (post-quantum)")
+		fmt.Print("\n> ")
+		var choice string
+		fmt.Scanln(&choice)
+		switch choice {
+		case "1":
+			sigType = keystore.KeyTypeECDSA
+		case "2":
+			sigType = "mldsa87"
+		default:
+			Fatalf("Invalid selection: %s", choice)
+		}
+	}
+
 	keydir, isEphemeral, err := cfg.Node.GetKeyStoreDir()
 	if err != nil {
 		Fatalf("Failed to get the keystore directory: %v", err)
@@ -294,13 +318,14 @@ func accountCreate(ctx *cli.Context) error {
 
 	password := getPassPhraseWithList("Your new account is locked with a password. Please provide a password. Do not forget this password.", true, 0, MakePasswordList(ctx))
 
-	account, err := keystore.StoreKey(keydir, password, scryptN, scryptP)
+	account, err := keystore.StoreKeyWithType(keydir, password, scryptN, scryptP, sigType)
 
 	if err != nil {
 		Fatalf("Failed to create account: %v", err)
 	}
 	fmt.Printf("\nYour new keypair was generated\n\n")
 	fmt.Printf("Public Address: %s\n", account.Address.Hex()[2:])
+	fmt.Printf("Signature Type: %s\n", sigType)
 	fmt.Printf("Path of the secret key file: %s\n\n", account.URL.Path)
 	fmt.Printf("- You can share your public address with anyone. Others need it to interact with you.\n")
 	fmt.Printf("- You must NEVER share the secret key with anyone! The key controls access to your funds!\n")

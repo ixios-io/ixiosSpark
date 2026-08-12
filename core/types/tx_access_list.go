@@ -52,6 +52,11 @@ type AccessListTx struct {
 	Data       []byte          // contract invocation input data
 	AccessList AccessList      // EIP-2930 access list
 	V, R, S    *big.Int        // signature values
+
+	// Optional post-quantum transaction signature payload.
+	SignatureType      []byte `json:"signatureType,omitempty" rlp:"optional"`
+	SignaturePublicKey []byte `json:"signaturePublicKey,omitempty" rlp:"optional"`
+	Signature          []byte `json:"signature,omitempty" rlp:"optional"`
 }
 
 // copy creates a deep copy of the transaction data and initializes all fields.
@@ -62,13 +67,16 @@ func (tx *AccessListTx) copy() TxData {
 		Data:  common.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are copied below.
-		AccessList: make(AccessList, len(tx.AccessList)),
-		Value:      new(big.Int),
-		ChainID:    new(big.Int),
-		GasPrice:   new(big.Int),
-		V:          new(big.Int),
-		R:          new(big.Int),
-		S:          new(big.Int),
+		AccessList:         make(AccessList, len(tx.AccessList)),
+		Value:              new(big.Int),
+		ChainID:            new(big.Int),
+		GasPrice:           new(big.Int),
+		V:                  new(big.Int),
+		R:                  new(big.Int),
+		S:                  new(big.Int),
+		SignatureType:      common.CopyBytes(tx.SignatureType),
+		SignaturePublicKey: common.CopyBytes(tx.SignaturePublicKey),
+		Signature:          common.CopyBytes(tx.Signature),
 	}
 	copy(cpy.AccessList, tx.AccessList)
 	if tx.Value != nil {
@@ -115,6 +123,24 @@ func (tx *AccessListTx) rawSignatureValues() (v, r, s *big.Int) {
 
 func (tx *AccessListTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.ChainID, tx.V, tx.R, tx.S = chainID, v, r, s
+}
+
+func (tx *AccessListTx) signatureType() []byte {
+	return tx.SignatureType
+}
+
+func (tx *AccessListTx) signaturePublicKey() []byte {
+	return tx.SignaturePublicKey
+}
+
+func (tx *AccessListTx) signatureBytes() []byte {
+	return tx.Signature
+}
+
+func (tx *AccessListTx) setSignaturePayload(sigType, publicKey, signature []byte) {
+	tx.SignatureType = common.CopyBytes(sigType)
+	tx.SignaturePublicKey = common.CopyBytes(publicKey)
+	tx.Signature = common.CopyBytes(signature)
 }
 
 func (tx *AccessListTx) encode(b *bytes.Buffer) error {

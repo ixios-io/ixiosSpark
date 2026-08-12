@@ -61,12 +61,40 @@ import (
 // current disk layer.
 
 const (
-	accountIndexSize = common.AddressLength + 13 // The length of encoded account index
-	slotIndexSize    = common.HashLength + 5     // The length of encoded slot index
-	historyMetaSize  = 9 + 2*common.HashLength   // The length of fixed size part of meta object
+	legacyAccountIndexSize    = common.LegacyAddressLength + 13 // The length of encoded account index in legacy history objects.
+	canonicalAccountIndexSize = common.AddressLength + 13       // The length of encoded account index in canonical history objects.
+	slotIndexSize             = common.HashLength + 5           // The length of encoded slot index
+	historyMetaSize           = 9 + 2*common.HashLength         // The length of fixed size part of meta object
 
-	stateHistoryVersion = uint8(0) // initial version of state history structure.
+	legacyStateHistoryVersion = uint8(0) // initial version of state history structure.
+	stateHistoryVersion       = uint8(1) // canonical 48-byte address history structure.
 )
+
+func historyAddressLength(version uint8) int {
+	switch version {
+	case legacyStateHistoryVersion:
+		return common.LegacyAddressLength
+	case stateHistoryVersion:
+		return common.AddressLength
+	default:
+		return 0
+	}
+}
+
+func historyAccountIndexSize(version uint8) int {
+	addrLen := historyAddressLength(version)
+	if addrLen == 0 {
+		return 0
+	}
+	return addrLen + 13
+}
+
+func historyAddressBytes(addr common.Address, version uint8) []byte {
+	if version == legacyStateHistoryVersion {
+		return addr.CompactBytes()
+	}
+	return addr.Bytes()
+}
 
 // Each state history entry is consisted of five elements:
 //
@@ -145,23 +173,26 @@ type accountIndex struct {
 }
 
 // encode packs account index into byte stream.
-func (i *accountIndex) encode() []byte {
-	var buf [accountIndexSize]byte
-	copy(buf[:], i.address.Bytes())
-	buf[common.AddressLength] = i.length
-	binary.BigEndian.PutUint32(buf[common.AddressLength+1:], i.offset)
-	binary.BigEndian.PutUint32(buf[common.AddressLength+5:], i.storageOffset)
-	binary.BigEndian.PutUint32(buf[common.AddressLength+9:], i.storageSlots)
-	return buf[:]
+func (i *accountIndex) encode(version uint8) []byte {
+	addrLen := historyAddressLength(version)
+	indexSize := historyAccountIndexSize(version)
+	buf := make([]byte, indexSize)
+	copy(buf[:addrLen], historyAddressBytes(i.address, version))
+	buf[addrLen] = i.length
+	binary.BigEndian.PutUint32(buf[addrLen+1:], i.offset)
+	binary.BigEndian.PutUint32(buf[addrLen+5:], i.storageOffset)
+	binary.BigEndian.PutUint32(buf[addrLen+9:], i.storageSlots)
+	return buf
 }
 
 // decode unpacks account index from byte stream.
-func (i *accountIndex) decode(blob []byte) {
-	i.address = common.BytesToAddress(blob[:common.AddressLength])
-	i.length = blob[common.AddressLength]
-	i.offset = binary.BigEndian.Uint32(blob[common.AddressLength+1:])
-	i.storageOffset = binary.BigEndian.Uint32(blob[common.AddressLength+5:])
-	i.storageSlots = binary.BigEndian.Uint32(blob[common.AddressLength+9:])
+func (i *accountIndex) decode(blob []byte, version uint8) {
+	addrLen := historyAddressLength(version)
+	i.address = common.BytesToAddress(blob[:addrLen])
+	i.length = blob[addrLen]
+	i.offset = binary.BigEndian.Uint32(blob[addrLen+1:])
+	i.storageOffset = binary.BigEndian.Uint32(blob[addrLen+5:])
+	i.storageSlots = binary.BigEndian.Uint32(blob[addrLen+9:])
 }
 
 // slotIndex describes the metadata belonging to a storage slot.
@@ -198,13 +229,14 @@ type meta struct {
 
 // encode packs the meta object into byte stream.
 func (m *meta) encode() []byte {
-	buf := make([]byte, historyMetaSize+len(m.incomplete)*common.AddressLength)
+	addrLen := historyAddressLength(m.version)
+	buf := make([]byte, historyMetaSize+len(m.incomplete)*addrLen)
 	buf[0] = m.version
 	copy(buf[1:1+common.HashLength], m.parent.Bytes())
 	copy(buf[1+common.HashLength:1+2*common.HashLength], m.root.Bytes())
 	binary.BigEndian.PutUint64(buf[1+2*common.HashLength:historyMetaSize], m.block)
 	for i, h := range m.incomplete {
-		copy(buf[i*common.AddressLength+historyMetaSize:], h.Bytes())
+		copy(buf[i*addrLen+historyMetaSize:], historyAddressBytes(h, m.version))
 	}
 	return buf[:]
 }
@@ -214,26 +246,26 @@ func (m *meta) decode(blob []byte) error {
 	if len(blob) < 1 {
 		return fmt.Errorf("no version tag")
 	}
-	switch blob[0] {
-	case stateHistoryVersion:
-		if len(blob) < historyMetaSize {
-			return fmt.Errorf("invalid state history meta, len: %d", len(blob))
-		}
-		if (len(blob)-historyMetaSize)%common.AddressLength != 0 {
-			return fmt.Errorf("corrupted state history meta, len: %d", len(blob))
-		}
-		m.version = blob[0]
-		m.parent = common.BytesToHash(blob[1 : 1+common.HashLength])
-		m.root = common.BytesToHash(blob[1+common.HashLength : 1+2*common.HashLength])
-		m.block = binary.BigEndian.Uint64(blob[1+2*common.HashLength : historyMetaSize])
-		for pos := historyMetaSize; pos < len(blob); {
-			m.incomplete = append(m.incomplete, common.BytesToAddress(blob[pos:pos+common.AddressLength]))
-			pos += common.AddressLength
-		}
-		return nil
-	default:
+	addrLen := historyAddressLength(blob[0])
+	if addrLen == 0 {
 		return fmt.Errorf("unknown version %d", blob[0])
 	}
+	if len(blob) < historyMetaSize {
+		return fmt.Errorf("invalid state history meta, len: %d", len(blob))
+	}
+	if (len(blob)-historyMetaSize)%addrLen != 0 {
+		return fmt.Errorf("corrupted state history meta, len: %d", len(blob))
+	}
+	m.version = blob[0]
+	m.parent = common.BytesToHash(blob[1 : 1+common.HashLength])
+	m.root = common.BytesToHash(blob[1+common.HashLength : 1+2*common.HashLength])
+	m.block = binary.BigEndian.Uint64(blob[1+2*common.HashLength : historyMetaSize])
+	m.incomplete = m.incomplete[:0]
+	for pos := historyMetaSize; pos < len(blob); {
+		m.incomplete = append(m.incomplete, common.BytesToAddress(blob[pos:pos+addrLen]))
+		pos += addrLen
+	}
+	return nil
 }
 
 // history represents a set of state changes belong to a block along with
@@ -323,17 +355,19 @@ func (h *history) encode() ([]byte, []byte, []byte, []byte) {
 			slotNumber += uint32(len(slots))
 		}
 		accountData = append(accountData, h.accounts[addr]...)
-		accountIndexes = append(accountIndexes, accIndex.encode()...)
+		accountIndexes = append(accountIndexes, accIndex.encode(h.meta.version)...)
 	}
 	return accountData, storageData, accountIndexes, storageIndexes
 }
 
 // decoder wraps the byte streams for decoding with extra meta fields.
 type decoder struct {
-	accountData    []byte // the buffer for concatenated account data
-	storageData    []byte // the buffer for concatenated storage data
-	accountIndexes []byte // the buffer for concatenated account index
-	storageIndexes []byte // the buffer for concatenated storage index
+	version          uint8  // history object version
+	accountIndexSize int    // encoded account index size for this history version
+	accountData      []byte // the buffer for concatenated account data
+	storageData      []byte // the buffer for concatenated storage data
+	accountIndexes   []byte // the buffer for concatenated account index
+	storageIndexes   []byte // the buffer for concatenated storage index
 
 	lastAccount       *common.Address // the address of last resolved account
 	lastAccountRead   uint32          // the read-cursor position of account data
@@ -353,7 +387,10 @@ type decoder struct {
 // - empty account data: all accounts were not present
 // - empty storage set: no slots are modified
 func (r *decoder) verify() error {
-	if len(r.accountIndexes)%accountIndexSize != 0 || len(r.accountIndexes) == 0 {
+	if r.accountIndexSize == 0 {
+		return fmt.Errorf("invalid account index size for history version %d", r.version)
+	}
+	if len(r.accountIndexes)%r.accountIndexSize != 0 || len(r.accountIndexes) == 0 {
 		return fmt.Errorf("invalid account index, len: %d", len(r.accountIndexes))
 	}
 	if len(r.storageIndexes)%slotIndexSize != 0 {
@@ -366,10 +403,10 @@ func (r *decoder) verify() error {
 func (r *decoder) readAccount(pos int) (accountIndex, []byte, error) {
 	// Decode account index from the index byte stream.
 	var index accountIndex
-	if (pos+1)*accountIndexSize > len(r.accountIndexes) {
+	if (pos+1)*r.accountIndexSize > len(r.accountIndexes) {
 		return accountIndex{}, nil, errors.New("account data buffer is corrupted")
 	}
-	index.decode(r.accountIndexes[pos*accountIndexSize : (pos+1)*accountIndexSize])
+	index.decode(r.accountIndexes[pos*r.accountIndexSize:(pos+1)*r.accountIndexSize], r.version)
 
 	// Perform validation before parsing account data, ensure
 	// - account is sorted in order in byte stream
@@ -451,16 +488,18 @@ func (h *history) decode(accountData, storageData, accountIndexes, storageIndexe
 		storageList = make(map[common.Address][]common.Hash)
 
 		r = &decoder{
-			accountData:    accountData,
-			storageData:    storageData,
-			accountIndexes: accountIndexes,
-			storageIndexes: storageIndexes,
+			version:          h.meta.version,
+			accountIndexSize: historyAccountIndexSize(h.meta.version),
+			accountData:      accountData,
+			storageData:      storageData,
+			accountIndexes:   accountIndexes,
+			storageIndexes:   storageIndexes,
 		}
 	)
 	if err := r.verify(); err != nil {
 		return err
 	}
-	for i := 0; i < len(accountIndexes)/accountIndexSize; i++ {
+	for i := 0; i < len(accountIndexes)/r.accountIndexSize; i++ {
 		// Resolve account first
 		accIndex, accData, err := r.readAccount(i)
 		if err != nil {

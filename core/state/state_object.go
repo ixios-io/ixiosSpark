@@ -103,7 +103,7 @@ func newObject(db *StateDB, address common.Address, acct *types.StateAccount) *s
 	return &stateObject{
 		db:             db,
 		address:        address,
-		addrHash:       crypto.Keccak256Hash(address[:]),
+		addrHash:       crypto.Keccak256Hash(address.CompactBytes()),
 		origin:         origin,
 		data:           *acct,
 		originStorage:  make(Storage),

@@ -29,6 +29,11 @@ type LegacyTx struct {
 	Value    *big.Int        // wei amount
 	Data     []byte          // contract invocation input data
 	V, R, S  *big.Int        // signature values
+
+	// Optional post-quantum transaction signature payload.
+	SignatureType      []byte `json:"signatureType,omitempty" rlp:"optional"`
+	SignaturePublicKey []byte `json:"signaturePublicKey,omitempty" rlp:"optional"`
+	Signature          []byte `json:"signature,omitempty" rlp:"optional"`
 }
 
 // NewTransaction creates an unsigned legacy transaction.
@@ -52,11 +57,14 @@ func (tx *LegacyTx) copy() TxData {
 		Data:  common.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are initialized below.
-		Value:    new(big.Int),
-		GasPrice: new(big.Int),
-		V:        new(big.Int),
-		R:        new(big.Int),
-		S:        new(big.Int),
+		Value:              new(big.Int),
+		GasPrice:           new(big.Int),
+		V:                  new(big.Int),
+		R:                  new(big.Int),
+		S:                  new(big.Int),
+		SignatureType:      common.CopyBytes(tx.SignatureType),
+		SignaturePublicKey: common.CopyBytes(tx.SignaturePublicKey),
+		Signature:          common.CopyBytes(tx.Signature),
 	}
 	if tx.Value != nil {
 		cpy.Value.Set(tx.Value)
@@ -99,6 +107,24 @@ func (tx *LegacyTx) rawSignatureValues() (v, r, s *big.Int) {
 
 func (tx *LegacyTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.V, tx.R, tx.S = v, r, s
+}
+
+func (tx *LegacyTx) signatureType() []byte {
+	return tx.SignatureType
+}
+
+func (tx *LegacyTx) signaturePublicKey() []byte {
+	return tx.SignaturePublicKey
+}
+
+func (tx *LegacyTx) signatureBytes() []byte {
+	return tx.Signature
+}
+
+func (tx *LegacyTx) setSignaturePayload(sigType, publicKey, signature []byte) {
+	tx.SignatureType = common.CopyBytes(sigType)
+	tx.SignaturePublicKey = common.CopyBytes(publicKey)
+	tx.Signature = common.CopyBytes(signature)
 }
 
 func (tx *LegacyTx) encode(*bytes.Buffer) error {

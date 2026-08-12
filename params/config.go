@@ -27,8 +27,8 @@ var (
 	MainnetGenesisHash     = common.HexToHash("0xa19acef59b3b84f192a69407981c50695fd105988d9311dd2e1c60332b629f2f")
 	AetherSeedGenesisHash  = common.HexToHash("0x52e4ce5b2ed803547bed068cf40c61c852f0863ad8c86f2a9c133d973234b16c")
 	AetherBloomGenesisHash = common.HexToHash("0x3563309d1cc3fe446a4ec7e984737a32e98db49309437c6dee5834568b89cd15")
-	AetherForgeGenesisHash = common.HexToHash("0x3338fe1106f3f16ee84ada4e09a8c174f2a757f18f349c37de35aa3ee9f2836a")
-	NeoDawnGenesisHash     = common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000") // todo
+	AetherForgeGenesisHash = common.HexToHash("0x7da56aadaf00d0e1b4acc3a92b228f20ae32510eb9315c068b3d64efc1d5cc24")
+	AetherNexusGenesisHash = common.HexToHash("0x0000000000000000000000000000000000000000000000000000000000000000") // todo
 )
 
 func newUint64(val uint64) *uint64 { return &val }
@@ -37,6 +37,7 @@ var (
 	// MainnetChainConfig is the chain parameters to run a node on the main network.
 	MainnetChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(1),
+		AegisBlock:          big.NewInt(int64(29_376_000)),
 		HomesteadBlock:      big.NewInt(0),
 		EIP150Block:         big.NewInt(0),
 		EIP155Block:         big.NewInt(0),
@@ -58,32 +59,10 @@ var (
 		},
 	}
 
-	// NeoDawnChainConfig contains the chain parameters to run a node on the NeoDawn test network.
-	NeoDawnChainConfig = &ChainConfig{
-		ChainID:             big.NewInt(229969),
-		HomesteadBlock:      big.NewInt(0),
-		EIP150Block:         big.NewInt(0),
-		EIP155Block:         big.NewInt(0),
-		EIP158Block:         big.NewInt(0),
-		ByzantiumBlock:      big.NewInt(0),
-		ConstantinopleBlock: big.NewInt(0),
-		PetersburgBlock:     big.NewInt(0),
-		IstanbulBlock:       big.NewInt(0),
-		MuirGlacierBlock:    nil,
-		BerlinBlock:         big.NewInt(0),
-		LondonBlock:         big.NewInt(0),
-		ArrowGlacierBlock:   nil,
-		GrayGlacierBlock:    nil,
-		ShanghaiTime:        nil,
-		CancunTime:          nil,
-		Clique: &CliqueConfig{
-			Period: 998,
-			Epoch:  86400,
-		},
-	}
 	// AetherForgeChainConfig contains the chain parameters to run a node on the AetherForge test network.
 	AetherForgeChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(2),
+		AegisBlock:          big.NewInt(int64(86400)),
 		HomesteadBlock:      big.NewInt(0),
 		EIP150Block:         big.NewInt(0),
 		EIP155Block:         big.NewInt(0),
@@ -104,9 +83,11 @@ var (
 			Epoch:  86400,
 		},
 	}
-	// AetherBloomChainConfig contains the chain parameters to run a node on the AetherBloom test network.
-	AetherBloomChainConfig = &ChainConfig{
-		ChainID:             big.NewInt(486662),
+
+	// AetherNexusChainConfig contains the chain parameters to run a node on the AetherNexus test network.
+	AetherNexusChainConfig = &ChainConfig{
+		ChainID:             big.NewInt(3),
+		AegisBlock:          big.NewInt(int64(300)),
 		HomesteadBlock:      big.NewInt(0),
 		EIP150Block:         big.NewInt(0),
 		EIP155Block:         big.NewInt(0),
@@ -130,6 +111,7 @@ var (
 
 	AllDevChainProtocolChanges = &ChainConfig{
 		ChainID:                       big.NewInt(1337),
+		AegisBlock:                    big.NewInt(0),
 		HomesteadBlock:                big.NewInt(0),
 		EIP150Block:                   big.NewInt(0),
 		EIP155Block:                   big.NewInt(0),
@@ -148,40 +130,9 @@ var (
 		TerminalTotalDifficultyPassed: true,
 	}
 
-	// AllCliqueProtocolChanges contains every protocol change (EIPs) introduced
-	// and accepted by the Ixios core developers into the Clique consensus.
-	AllCliqueProtocolChanges = &ChainConfig{
-		ChainID:                       big.NewInt(1337),
-		HomesteadBlock:                big.NewInt(0),
-		DAOForkBlock:                  nil,
-		DAOForkSupport:                false,
-		EIP150Block:                   big.NewInt(0),
-		EIP155Block:                   big.NewInt(0),
-		EIP158Block:                   big.NewInt(0),
-		ByzantiumBlock:                big.NewInt(0),
-		ConstantinopleBlock:           big.NewInt(0),
-		PetersburgBlock:               big.NewInt(0),
-		IstanbulBlock:                 big.NewInt(0),
-		MuirGlacierBlock:              big.NewInt(0),
-		BerlinBlock:                   big.NewInt(0),
-		LondonBlock:                   big.NewInt(0),
-		ArrowGlacierBlock:             nil,
-		GrayGlacierBlock:              nil,
-		MergeNetsplitBlock:            nil,
-		ShanghaiTime:                  nil,
-		CancunTime:                    nil,
-		PragueTime:                    nil,
-		VerkleTime:                    nil,
-		TerminalTotalDifficulty:       nil,
-		TerminalTotalDifficultyPassed: false,
-		Ethash:                        nil,
-		Clique:                        &CliqueConfig{Period: 0, Epoch: 30000},
-	}
-
-	// TestChainConfig contains every protocol change (EIPs) introduced
-	// and accepted by the Ixios core developers for testing purposes.
 	TestChainConfig = &ChainConfig{
 		ChainID:                       big.NewInt(1),
+		AegisBlock:                    big.NewInt(0),
 		HomesteadBlock:                big.NewInt(0),
 		DAOForkBlock:                  nil,
 		DAOForkSupport:                false,
@@ -207,75 +158,13 @@ var (
 		Ethash:                        new(EthashConfig),
 		Clique:                        nil,
 	}
-
-	// MergedTestChainConfig contains every protocol change (EIPs) introduced
-	// and accepted by the Ixios core developers for testing purposes.
-	MergedTestChainConfig = &ChainConfig{
-		ChainID:                       big.NewInt(1),
-		HomesteadBlock:                big.NewInt(0),
-		DAOForkBlock:                  nil,
-		DAOForkSupport:                false,
-		EIP150Block:                   big.NewInt(0),
-		EIP155Block:                   big.NewInt(0),
-		EIP158Block:                   big.NewInt(0),
-		ByzantiumBlock:                big.NewInt(0),
-		ConstantinopleBlock:           big.NewInt(0),
-		PetersburgBlock:               big.NewInt(0),
-		IstanbulBlock:                 big.NewInt(0),
-		MuirGlacierBlock:              big.NewInt(0),
-		BerlinBlock:                   big.NewInt(0),
-		LondonBlock:                   big.NewInt(0),
-		ArrowGlacierBlock:             big.NewInt(0),
-		GrayGlacierBlock:              big.NewInt(0),
-		MergeNetsplitBlock:            big.NewInt(0),
-		ShanghaiTime:                  newUint64(0),
-		CancunTime:                    newUint64(0),
-		PragueTime:                    nil,
-		VerkleTime:                    nil,
-		TerminalTotalDifficulty:       big.NewInt(0),
-		TerminalTotalDifficultyPassed: true,
-		Ethash:                        new(EthashConfig),
-		Clique:                        nil,
-	}
-
-	// NonActivatedConfig defines the chain configuration without activating
-	// any protocol change (EIPs).
-	NonActivatedConfig = &ChainConfig{
-		ChainID:                       big.NewInt(1),
-		HomesteadBlock:                nil,
-		DAOForkBlock:                  nil,
-		DAOForkSupport:                false,
-		EIP150Block:                   nil,
-		EIP155Block:                   nil,
-		EIP158Block:                   nil,
-		ByzantiumBlock:                nil,
-		ConstantinopleBlock:           nil,
-		PetersburgBlock:               nil,
-		IstanbulBlock:                 nil,
-		MuirGlacierBlock:              nil,
-		BerlinBlock:                   nil,
-		LondonBlock:                   nil,
-		ArrowGlacierBlock:             nil,
-		GrayGlacierBlock:              nil,
-		MergeNetsplitBlock:            nil,
-		ShanghaiTime:                  nil,
-		CancunTime:                    nil,
-		PragueTime:                    nil,
-		VerkleTime:                    nil,
-		TerminalTotalDifficulty:       nil,
-		TerminalTotalDifficultyPassed: false,
-		Ethash:                        new(EthashConfig),
-		Clique:                        nil,
-	}
-	TestRules = TestChainConfig.Rules(new(big.Int), false, 0)
 )
 
 // NetworkNames are user friendly names to use in the chain spec banner.
 var NetworkNames = map[string]string{
 	MainnetChainConfig.ChainID.String():     "mainnet",
 	AetherForgeChainConfig.ChainID.String(): "aetherForge",
-	AetherBloomChainConfig.ChainID.String(): "aetherBloom",
-	NeoDawnChainConfig.ChainID.String():     "neodawn",
+	AetherNexusChainConfig.ChainID.String(): "aetherNexus",
 }
 
 // ChainConfig is the core config which determines the blockchain settings.
@@ -285,6 +174,8 @@ var NetworkNames = map[string]string{
 // set of configuration options.
 type ChainConfig struct {
 	ChainID *big.Int `json:"chainId"` // chainId identifies the current chain and is used for replay protection
+
+	AegisBlock *big.Int `json:"aegisBlock,omitempty"` // Canonical 48-byte address format / MLDSA87 activation block
 
 	HomesteadBlock *big.Int `json:"homesteadBlock,omitempty"` // Homestead switch block (nil = no fork, 0 = already homestead)
 
@@ -327,6 +218,12 @@ type ChainConfig struct {
 	Ethash  *EthashConfig  `json:"ethash,omitempty"`
 	Clique  *CliqueConfig  `json:"clique,omitempty"`
 	Guildio *GuildioConfig `json:"guildio,omitempty"`
+}
+
+// IsAddressFormat returns whether the canonical 48-byte address format and
+// MLDSA87 addresses are active at the given block.
+func (c *ChainConfig) IsAddressFormat(num *big.Int) bool {
+	return isBlockForked(c.AegisBlock, num)
 }
 
 // EthashConfig is the consensus engine configs for proof-of-work based sealing.
@@ -385,10 +282,8 @@ func (c *ChainConfig) Description() string {
 		banner += "Ixios Mainnet\n"
 	} else if c.ChainID.String() == AetherForgeChainConfig.ChainID.String() {
 		banner += "Ixios AetherForge Testnet (chain_id=" + string(c.ChainID.String()) + ", mainnet=" + string(MainnetChainConfig.ChainID.String()) + ")\n"
-	} else if c.ChainID.String() == AetherBloomChainConfig.ChainID.String() {
-		banner += "Ixios AetherBloom Testnet (chain_id=" + string(c.ChainID.String()) + ", mainnet=" + string(MainnetChainConfig.ChainID.String()) + ")\n"
-	} else if c.ChainID.String() == NeoDawnChainConfig.ChainID.String() {
-		banner += "Ixios NeoDawn Testnet (chain_id=" + string(c.ChainID.String()) + ", mainnet=" + string(MainnetChainConfig.ChainID.String()) + ")\n"
+	} else if c.ChainID.String() == AetherNexusChainConfig.ChainID.String() {
+		banner += "Ixios AetherNexus Testnet (chain_id=" + string(c.ChainID.String()) + ", mainnet=" + string(MainnetChainConfig.ChainID.String()) + ")\n"
 	} else {
 		banner += "Ixios Testnet (chain_id=" + string(c.ChainID.String()) + ", mainnet=" + string(MainnetChainConfig.ChainID.String()) + ")\n"
 	}
@@ -547,6 +442,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "arrowGlacierBlock", block: c.ArrowGlacierBlock, optional: true},
 		{name: "grayGlacierBlock", block: c.GrayGlacierBlock, optional: true},
 		{name: "mergeNetsplitBlock", block: c.MergeNetsplitBlock, optional: true},
+		{name: "aegisBlock", block: c.AegisBlock, optional: true},
 		{name: "shanghaiTime", timestamp: c.ShanghaiTime},
 		{name: "cancunTime", timestamp: c.CancunTime, optional: true},
 		{name: "pragueTime", timestamp: c.PragueTime, optional: true},
@@ -590,6 +486,9 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 }
 
 func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, headNumber *big.Int, headTimestamp uint64) *ConfigCompatError {
+	if isForkBlockIncompatible(c.AegisBlock, newcfg.AegisBlock, headNumber) {
+		return newBlockCompatError("Address format fork block", c.AegisBlock, newcfg.AegisBlock)
+	}
 	if isForkBlockIncompatible(c.HomesteadBlock, newcfg.HomesteadBlock, headNumber) {
 		return newBlockCompatError("Homestead fork block", c.HomesteadBlock, newcfg.HomesteadBlock)
 	}
@@ -815,6 +714,7 @@ func (err *ConfigCompatError) Error() string {
 // phases.
 type Rules struct {
 	ChainID                                                 *big.Int
+	IsAddressFormat                                         bool
 	IsHomestead, IsEIP150, IsEIP155, IsEIP158               bool
 	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 	IsBerlin, IsLondon                                      bool
@@ -832,6 +732,7 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 	isMerge = isMerge && c.IsLondon(num)
 	return Rules{
 		ChainID:          new(big.Int).Set(chainID),
+		IsAddressFormat:  c.IsAddressFormat(num),
 		IsHomestead:      c.IsHomestead(num),
 		IsEIP150:         c.IsEIP150(num),
 		IsEIP155:         c.IsEIP155(num),

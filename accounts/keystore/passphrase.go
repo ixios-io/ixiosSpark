@@ -31,10 +31,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 	"github.com/google/uuid"
 	"github.com/ixios-io/ixiosSpark/accounts"
 	"github.com/ixios-io/ixiosSpark/common"
-	"github.com/ixios-io/ixiosSpark/common/math"
 	"github.com/ixios-io/ixiosSpark/crypto"
 	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/crypto/scrypt"
@@ -92,9 +92,14 @@ func (ks keyStorePassphrase) GetKey(addr common.Address, filename, auth string) 
 	return key, nil
 }
 
-// StoreKey generates a key, encrypts with 'auth' and stores in the given directory
+// StoreKey generates a new ECDSA key, encrypts it with 'auth' and stores it in the given directory.
 func StoreKey(dir, auth string, scryptN, scryptP int) (accounts.Account, error) {
-	_, a, err := storeNewKey(&keyStorePassphrase{dir, scryptN, scryptP, false}, rand.Reader, auth)
+	return StoreKeyWithType(dir, auth, scryptN, scryptP, KeyTypeECDSA)
+}
+
+// StoreKeyWithType generates a new key of the requested type, encrypts it with 'auth' and stores it in the given directory.
+func StoreKeyWithType(dir, auth string, scryptN, scryptP int, keyType string) (accounts.Account, error) {
+	_, a, err := storeNewKeyWithType(&keyStorePassphrase{dir, scryptN, scryptP, false}, rand.Reader, auth, keyType)
 	return a, err
 }
 
@@ -191,16 +196,20 @@ func EncryptDataV3(data, auth []byte, scryptN, scryptP int) (CryptoJSON, error) 
 // EncryptKey encrypts a key using the specified scrypt parameters into a json
 // blob that can be decrypted later on.
 func EncryptKey(key *Key, auth string, scryptN, scryptP int) ([]byte, error) {
-	keyBytes := math.PaddedBigBytes(key.PrivateKey.D, 32)
+	keyBytes, err := key.privateKeyBytes()
+	if err != nil {
+		return nil, err
+	}
 	cryptoStruct, err := EncryptDataV3(keyBytes, []byte(auth), scryptN, scryptP)
 	if err != nil {
 		return nil, err
 	}
 	encryptedKeyJSONV3 := encryptedKeyJSONV3{
-		hex.EncodeToString(key.Address[:]),
-		cryptoStruct,
-		key.Id.String(),
-		version,
+		Address: hex.EncodeToString(key.Address[:]),
+		Crypto:  cryptoStruct,
+		Id:      key.Id.String(),
+		Version: version,
+		KeyType: key.resolvedKeyType(),
 	}
 	return json.Marshal(encryptedKeyJSONV3)
 }
@@ -215,6 +224,7 @@ func DecryptKey(keyjson []byte, auth string) (*Key, error) {
 	// Depending on the version try to parse one way or another
 	var (
 		keyBytes, keyId []byte
+		keyType         string
 		err             error
 	)
 	if version, ok := m["version"].(string); ok && version == "1" {
@@ -223,30 +233,57 @@ func DecryptKey(keyjson []byte, auth string) (*Key, error) {
 			return nil, err
 		}
 		keyBytes, keyId, err = decryptKeyV1(k, auth)
+		keyType = k.KeyType
 	} else {
 		k := new(encryptedKeyJSONV3)
 		if err := json.Unmarshal(keyjson, k); err != nil {
 			return nil, err
 		}
 		keyBytes, keyId, err = decryptKeyV3(k, auth)
+		keyType = k.KeyType
 	}
 	// Handle any decryption errors and return the key
 	if err != nil {
 		return nil, err
 	}
-	key, err := crypto.ToECDSA(keyBytes)
-	if err != nil {
-		return nil, fmt.Errorf("invalid key: %w", err)
-	}
 	id, err := uuid.FromBytes(keyId)
 	if err != nil {
 		return nil, fmt.Errorf("invalid UUID: %w", err)
 	}
-	return &Key{
-		Id:         id,
-		Address:    crypto.PubkeyToAddress(key.PublicKey),
-		PrivateKey: key,
-	}, nil
+	normalizedKeyType, err := normalizeKeyType(keyType)
+	if err != nil {
+		return nil, err
+	}
+	switch normalizedKeyType {
+	case KeyTypeECDSA:
+		key, err := crypto.ToECDSA(keyBytes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid key: %w", err)
+		}
+		return &Key{
+			Id:         id,
+			Address:    crypto.PubkeyToAddress(key.PublicKey),
+			KeyType:    KeyTypeECDSA,
+			PrivateKey: key,
+		}, nil
+	case KeyTypeMLDSA87:
+		var privateKey mldsa87.PrivateKey
+		if err := privateKey.UnmarshalBinary(keyBytes); err != nil {
+			return nil, fmt.Errorf("invalid MLDSA87 key: %w", err)
+		}
+		publicKey, ok := privateKey.Public().(*mldsa87.PublicKey)
+		if !ok {
+			return nil, fmt.Errorf("invalid MLDSA87 public key type")
+		}
+		return &Key{
+			Id:                id,
+			Address:           crypto.MLDSA87PubkeyToAddress(publicKey.Bytes()),
+			KeyType:           KeyTypeMLDSA87,
+			MLDSA87PrivateKey: common.CopyBytes(keyBytes),
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported key type %q", keyType)
+	}
 }
 
 func DecryptDataV3(cryptoJson CryptoJSON, auth string) ([]byte, error) {

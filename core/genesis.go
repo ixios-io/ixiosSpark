@@ -360,12 +360,10 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *params.ChainConfig {
 		return g.Config
 	case ghash == params.MainnetGenesisHash:
 		return params.MainnetChainConfig
-	case ghash == params.NeoDawnGenesisHash:
-		return params.NeoDawnChainConfig
+	case ghash == params.AetherNexusGenesisHash:
+		return params.AetherNexusChainConfig
 	case ghash == params.AetherForgeGenesisHash:
 		return params.AetherForgeChainConfig
-	case ghash == params.AetherBloomGenesisHash:
-		return params.AetherBloomChainConfig
 	default:
 		return params.MainnetChainConfig
 	}
@@ -495,7 +493,7 @@ func buildExtraData(validators []ValidatorMKS) []byte {
 	extra = append(extra, vanity...)
 
 	for _, val := range validators {
-		extra = append(extra, val.Address[:]...) // 32 bytes
+		extra = append(extra, val.Address.CompactBytes()...)
 		extra = append(extra, val.MKSData...)
 	}
 
@@ -520,9 +518,8 @@ func DefaultGenesisBlock() *Genesis {
 	return &Genesis{
 		Config: &params.ChainConfig{
 			ChainID:             big.NewInt(1),
+			AegisBlock:          big.NewInt(int64(29_376_000)),
 			HomesteadBlock:      big.NewInt(0),
-			DAOForkBlock:        nil,
-			DAOForkSupport:      false,
 			EIP150Block:         big.NewInt(0),
 			EIP155Block:         big.NewInt(0),
 			EIP158Block:         big.NewInt(0),
@@ -554,18 +551,28 @@ func DefaultGenesisBlock() *Genesis {
 // DefaultAetherForgeGenesisBlock returns the AetherForge network genesis block.
 func DefaultAetherForgeGenesisBlock() *Genesis {
 	emptyMKS := make([]byte, 2656) // MKS contains secp256k1, Dilithium5, and SPHINCS256 public keys. Unused on Aether testnets.
-	v := ValidatorMKS{common.HexToAddress("00000000000045737501bcbd63b65e5c3829e1e6f6a88d5abf577d16b2194054"), emptyMKS}
-	vals := make([]ValidatorMKS, 0, 1)
-	vals = append(vals, v)
-	extra := buildExtraData(vals)
+
+	validators := []ValidatorMKS{
+		{common.HexToAddress("00000000000000000000000000000000000000000000A3431AbFB89aB5E0F7309f7922f79048960f9d3A1E42717831EC"), emptyMKS}, // validator 0
+		{common.HexToAddress("000000000000000000000000000000000000000000006135E95D2b82154043C3B1BFc3047Fe9e738496cfD0DBa9D750d"), emptyMKS}, // validator 1
+		{common.HexToAddress("000000000000000000000000000000000000000000003c77a64c836dA54E8C431529172794B78Fe0c0c407C322926d75"), emptyMKS}, // validator 2
+		{common.HexToAddress("00000000000000000000000000000000000000000000869f2949b2A51aF6e73D8aE62421E11843a68FB11A92cFd2c7C4"), emptyMKS}, // validator 3
+		{common.HexToAddress("00000000000000000000000000000000000000000000174df63800cC77f36B314773060E29298757Fe26d3C2493822f8"), emptyMKS}, // validator 4
+		{common.HexToAddress("00000000000000000000000000000000000000000000260cdDb9E21f22949A57fc1Dff32F8FB556dbB377b52843D78D5"), emptyMKS}, // validator 5
+		{common.HexToAddress("0000000000000000000000000000000000000000000093c02658407806b97482b1d87189796576bb6f8703d3087bfdeb"), emptyMKS},
+		{common.HexToAddress("00000000000000000000000000000000000000000000b9240abd46adb64cba4577224cf35e568fbf450cfef8b6be0e3e"), emptyMKS},
+		{common.HexToAddress("00000000000000000000000000000000000000000000f7ae673574d379b7f2580569c324439a132bf47aed3f4e8f08ab"), emptyMKS},
+		{common.HexToAddress("000000000000000000000000000000000000000000000cdde5a244ac249b8de1fb7edf63917323e9be3fed8803bee6e5"), emptyMKS},
+	}
+	extra := buildExtraData(validators)
 
 	totalSupply := big.NewInt(0)
 	totalSupply.SetString("10000000000000000000000000000", 10)
-	totalSupplyAddress := "000000000000fe75b7c87205cf6c3fb66c7b6ff5d3c4a4f8df61ccdab5273fb0"
-
+	totalSupplyAddress := "00000000000000000000000000000000000000000000970a8c7cfe15781f18e11f02de8bbb9e27a01782caad26bdd652"
 	return &Genesis{
 		Config: &params.ChainConfig{
 			ChainID:             big.NewInt(2),
+			AegisBlock:          big.NewInt(int64(86400)),
 			HomesteadBlock:      big.NewInt(0),
 			DAOForkBlock:        nil,
 			DAOForkSupport:      false,
@@ -588,7 +595,7 @@ func DefaultAetherForgeGenesisBlock() *Genesis {
 				Epoch:  86400,
 			},
 		},
-		Timestamp:  1744728000000,
+		Timestamp:  1775902600000,
 		Nonce:      0xffffffffffffffff,
 		ExtraData:  extra,
 		GasLimit:   2288000,
@@ -601,21 +608,23 @@ func DefaultAetherForgeGenesisBlock() *Genesis {
 	}
 }
 
-// DefaultAetherBloomGenesisBlock returns the AetherBloom network genesis block.
-func DefaultAetherBloomGenesisBlock() *Genesis {
-	// Parse the embedded validators
-	vals, err := parseEmbeddedValidators()
-	if err != nil {
-		panic(err)
+// DefaultAetherNexusGenesisBlock returns the AetherNexus network genesis block.
+func DefaultAetherNexusGenesisBlock() *Genesis {
+	emptyMKS := make([]byte, 2656) // MKS contains secp256k1, Dilithium5, and SPHINCS256 public keys. Unused on Aether testnets.
+	validators := []ValidatorMKS{
+		{common.HexToAddress("00000000000000000000000000000000000000000000A3431AbFB89aB5E0F7309f7922f79048960f9d3A1E42717831EC"), emptyMKS},
+		{common.HexToAddress("000000000000000000000000000000000000000000006135E95D2b82154043C3B1BFc3047Fe9e738496cfD0DBa9D750d"), emptyMKS},
+		{common.HexToAddress("000000000000000000000000000000000000000000003c77a64c836dA54E8C431529172794B78Fe0c0c407C322926d75"), emptyMKS},
 	}
-	extra := buildExtraData(vals)
+	extra := buildExtraData(validators)
+
 	totalSupply := big.NewInt(0)
 	totalSupply.SetString("10000000000000000000000000000", 10)
-	totalSupplyAddress := "00000000000051ea86df074d5d36f9c40bfdae3e26c44fe1826c1f4051f40851"
-
+	totalSupplyAddress := "00000000000000000000000000000000000000000000970a8c7cfe15781f18e11f02de8bbb9e27a01782caad26bdd652"
 	return &Genesis{
 		Config: &params.ChainConfig{
-			ChainID:             big.NewInt(486662),
+			ChainID:             big.NewInt(2),
+			AegisBlock:          big.NewInt(int64(300)),
 			HomesteadBlock:      big.NewInt(0),
 			DAOForkBlock:        nil,
 			DAOForkSupport:      false,
@@ -635,10 +644,10 @@ func DefaultAetherBloomGenesisBlock() *Genesis {
 			CancunTime:          nil,
 			Clique: &params.CliqueConfig{
 				Period: 998,
-				Epoch:  86400,
+				Epoch:  300,
 			},
 		},
-		Timestamp:  1743825000000,
+		Timestamp:  1775728555000,
 		Nonce:      0xffffffffffffffff,
 		ExtraData:  extra,
 		GasLimit:   2288000,
@@ -646,50 +655,6 @@ func DefaultAetherBloomGenesisBlock() *Genesis {
 		Alloc: types.GenesisAlloc{
 			common.HexToAddress(totalSupplyAddress): {
 				Balance: totalSupply,
-			},
-		},
-	}
-}
-
-// DefaultNeoDawnGenesisBlock returns the NeoDawn network genesis block.
-func DefaultNeoDawnGenesisBlock() *Genesis {
-	total_supply := big.NewInt(0)
-
-	total_supply.SetString("10000000000000000000000000000", 10)
-	totalSupplyAddress := "67470c91F957B379ae35CE99F920B7Db3eBE2059"
-	genesisValidator := "6A5AC309C528CC1C3D36abE37D7979aC19417840"
-
-	return &Genesis{
-		Config: &params.ChainConfig{
-			ChainID:             big.NewInt(229969),
-			HomesteadBlock:      big.NewInt(0),
-			EIP150Block:         big.NewInt(0),
-			EIP155Block:         big.NewInt(0),
-			EIP158Block:         big.NewInt(0),
-			ByzantiumBlock:      big.NewInt(0),
-			ConstantinopleBlock: big.NewInt(0),
-			PetersburgBlock:     big.NewInt(0),
-			IstanbulBlock:       big.NewInt(0),
-			BerlinBlock:         big.NewInt(0),
-			LondonBlock:         big.NewInt(0),
-			Clique: &params.CliqueConfig{
-				Period: 998,
-				Epoch:  86400,
-			},
-		},
-		Nonce: 0xffffffffffffffff,
-		ExtraData: hexutil.MustDecode(
-			"0x" +
-				"0000000000000000000000000000000000000000000000000000000000000000" + // 32-byte prefix
-				genesisValidator +
-				"0000000000000000000000000000000000000000" +
-				"00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000", // empty signature
-		),
-		GasLimit:   2288000,
-		Difficulty: big.NewInt(1),
-		Alloc: map[common.Address]GenesisAccount{
-			common.HexToAddress(totalSupplyAddress): {
-				Balance: total_supply,
 			},
 		},
 	}

@@ -608,12 +608,14 @@ func (pool *LegacyPool) local() map[common.Address]types.Transactions {
 // and does not require the pool mutex to be held.
 func (pool *LegacyPool) validateTxBasics(tx *types.Transaction, local bool) error {
 	currentBlock := pool.currentHead.Load().Number
-	minGasPrice := zeta.CalculateZetaValue(currentBlock)
+	minimumGasPrice := zeta.CalculateMinimumGasPrice(pool.chainconfig, currentBlock)
+	requiredZeta := zeta.MinimumGasPriceZeta(pool.chainconfig, currentBlock)
+	oneZeta := zeta.CalculateZetaValue(currentBlock)
 
-	// Compare transaction gas price with minimum required (1 zeta)
-	if tx.GasPrice().Cmp(minGasPrice) < 0 {
-		return fmt.Errorf("gas price too low: got %v, minimum required is %v (1 zeta)",
-			tx.GasPrice(), minGasPrice)
+	// Compare transaction gas price with the fork-aware minimum zeta threshold.
+	if tx.GasPrice().Cmp(minimumGasPrice) < 0 {
+		return fmt.Errorf("gas price too low: got %v, minimum required is %v (%d zeta; 1 zeta = %v wei)",
+			tx.GasPrice(), minimumGasPrice, requiredZeta, oneZeta)
 	}
 
 	opts := &txpool.ValidationOptions{
@@ -724,8 +726,7 @@ func (pool *LegacyPool) add(tx *types.Transaction, local bool) (replaced bool, e
 	// If the transaction pool is full, discard underpriced transactions
 	if uint64(pool.all.Slots()+numSlots(tx)) > pool.config.GlobalSlots+pool.config.GlobalQueue {
 		// If the new transaction is underpriced, don't accept it
-		fmt.Printf("todo: use blockNumber instead of big.NewInt(0)")
-		if !isLocal && pool.priced.Underpriced(tx, big.NewInt(0)) {
+		if !isLocal && pool.priced.Underpriced(tx, zeta.CalculateMinimumGasPrice(pool.chainconfig, pool.currentHead.Load().Number)) {
 			log.Trace("Discarding underpriced transaction", "hash", hash, "gasTipCap", tx.GasTipCap(), "gasFeeCap", tx.GasFeeCap())
 			return false, txpool.ErrUnderpriced
 		}
@@ -1420,6 +1421,47 @@ func (pool *LegacyPool) reset(oldHead, newHead *types.Header) {
 	log.Debug("Reinjecting stale transactions", "count", len(reinject))
 	core.SenderCacher.Recover(pool.signer, reinject)
 	pool.addTxsLocked(reinject, false)
+
+	pool.dropTransactionsBelowMinimumGasPrice()
+}
+
+func (pool *LegacyPool) dropTransactionsBelowMinimumGasPrice() {
+	minimumGasPrice := zeta.CalculateMinimumGasPrice(pool.chainconfig, pool.currentHead.Load().Number)
+
+	for addr, list := range pool.pending {
+		drops, invalids := list.FilterGasPrice(minimumGasPrice)
+		for _, tx := range drops {
+			pool.all.Remove(tx.Hash())
+			pool.pendingNonces.setIfLower(addr, tx.Nonce())
+			log.Trace("Removed underpriced pending transaction", "hash", tx.Hash(), "gasPrice", tx.GasPrice(), "minimumGasPrice", minimumGasPrice)
+		}
+		for _, tx := range invalids {
+			pool.pendingNonces.setIfLower(addr, tx.Nonce())
+			pool.enqueueTx(tx.Hash(), tx, false, false)
+			log.Trace("Demoted pending transaction after minimum gas price update", "hash", tx.Hash(), "gasPrice", tx.GasPrice(), "minimumGasPrice", minimumGasPrice)
+		}
+		if list.Empty() {
+			delete(pool.pending, addr)
+			if _, ok := pool.queue[addr]; !ok {
+				pool.reserve(addr, false)
+			}
+		}
+	}
+
+	for addr, list := range pool.queue {
+		drops, _ := list.FilterGasPrice(minimumGasPrice)
+		for _, tx := range drops {
+			pool.all.Remove(tx.Hash())
+			log.Trace("Removed underpriced queued transaction", "hash", tx.Hash(), "gasPrice", tx.GasPrice(), "minimumGasPrice", minimumGasPrice)
+		}
+		if list.Empty() {
+			delete(pool.queue, addr)
+			delete(pool.beats, addr)
+			if _, ok := pool.pending[addr]; !ok {
+				pool.reserve(addr, false)
+			}
+		}
+	}
 }
 
 // promoteExecutables moves transactions that have become processable from the

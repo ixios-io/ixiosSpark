@@ -77,3 +77,33 @@ func allZero(b []byte) bool {
 	}
 	return true
 }
+
+// WordToAddress canonicalizes a 256-bit EVM stack word into an Ixios address.
+// Legacy 20-byte and 32-byte address encodings are left-padded into the 48-byte
+// canonical form.
+func WordToAddress(word interface{}) common.Address {
+	var b [32]byte
+	switch w := word.(type) {
+	case *uint256.Int:
+		if w == nil {
+			return common.Address{}
+		}
+		b = w.Bytes32()
+	case uint256.Int:
+		b = (&w).Bytes32()
+	default:
+		panic("unsupported WordToAddress input type")
+	}
+	return common.BytesToAddress(b[:])
+}
+
+// AddressToStackBytes converts an Ixios address into a 32-byte EVM stack word.
+// ECDSA addresses use their legacy compact encoding. Longer addresses are
+// truncated from the left because the EVM stack width is fixed at 32 bytes.
+func AddressToStackBytes(addr common.Address) []byte {
+	b := addr.CompactBytes()
+	if len(b) > common.HashLength {
+		return b[len(b)-common.HashLength:]
+	}
+	return b
+}

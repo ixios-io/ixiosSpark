@@ -32,10 +32,24 @@ import (
 
 // Lengths of hashes and addresses in bytes.
 const (
-	// HashLength is the expected length of the hash
+	// HashLength is the expected length of the hash.
 	HashLength = 32
-	// AddressLength is the expected length of the address
-	AddressLength = 32
+	// AddressLength is the canonical length of an Ixios address.
+	AddressLength = 48
+	// LegacyAddressLength is the historic compact address length used by mainnet ECDSA addresses.
+	LegacyAddressLength = 32
+	// ECDSAAddressHashLength is the number of Keccak-derived bytes carried by an ECDSA address.
+	ECDSAAddressHashLength = 26
+	// LegacyECDSAAirdropAddressHashLength is the historic truncated ECDSA airdrop hash length.
+	LegacyECDSAAirdropAddressHashLength = 20
+	// ECDSAZeroPrefixLength identifies canonical ECDSA addresses inside the 48-byte address space.
+	ECDSAZeroPrefixLength = AddressLength - ECDSAAddressHashLength
+	// LegacyECDSACompactZeroPrefixLength is the legacy zero prefix stored on chain for canonical ECDSA addresses.
+	LegacyECDSACompactZeroPrefixLength = LegacyAddressLength - ECDSAAddressHashLength
+	// LegacyECDSAAirdropZeroPrefixLength is the legacy zero prefix stored on chain for truncated 20-byte ECDSA airdrop addresses.
+	LegacyECDSAAirdropZeroPrefixLength = LegacyAddressLength - LegacyECDSAAirdropAddressHashLength
+	// LegacyECDSAAirdropCanonicalZeroPrefixLength is the canonical 48-byte zero prefix for truncated ECDSA airdrop addresses.
+	LegacyECDSAAirdropCanonicalZeroPrefixLength = AddressLength - LegacyECDSAAirdropAddressHashLength
 )
 
 var (
@@ -43,7 +57,7 @@ var (
 	addressT = reflect.TypeOf(Address{})
 
 	// MaxAddress represents the maximum possible address value.
-	MaxAddress = HexToAddress("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+	MaxAddress = BytesToAddress(bytes.Repeat([]byte{0xff}, AddressLength))
 
 	// MaxHash represents the maximum possible hash value.
 	MaxHash = HexToHash("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
@@ -206,7 +220,7 @@ func (h UnprefixedHash) MarshalText() ([]byte, error) {
 
 /////////// Address
 
-// Address represents the 32 byte address of an Ixios account.
+// Address represents the canonical 48 byte address of an Ixios account.
 type Address [AddressLength]byte
 
 // BytesToAddress returns Address with value b.
@@ -230,7 +244,15 @@ func IsHexAddress(s string) bool {
 	if has0xPrefix(s) {
 		s = s[2:]
 	}
-	return len(s) == 2*AddressLength && isHex(s)
+	if !isHex(s) {
+		return false
+	}
+	switch len(s) {
+	case 2 * 20, 2 * LegacyAddressLength, 2 * AddressLength:
+		return true
+	default:
+		return false
+	}
 }
 
 // Cmp compares two addresses.
@@ -257,10 +279,19 @@ func (a Address) String() string {
 func (a *Address) checksumHex() []byte {
 	buf := a.hex()
 
-	// compute checksum
-	sha := sha3.NewLegacyKeccak256()
-	sha.Write(buf[2:])
-	hash := sha.Sum(nil)
+	// compute checksum. The historic 32-byte address format fit entirely within a
+	// Keccak256 digest. Canonical 48-byte addresses need more checksum nibbles, so
+	// extend the digest width accordingly.
+	var hash []byte
+	if len(buf) <= 2+2*HashLength {
+		sha := sha3.NewLegacyKeccak256()
+		sha.Write(buf[2:])
+		hash = sha.Sum(nil)
+	} else {
+		sha := sha3.NewLegacyKeccak512()
+		sha.Write(buf[2:])
+		hash = sha.Sum(nil)
+	}
 	for i := 2; i < len(buf); i++ {
 		hashByte := hash[(i-2)/2]
 		if i%2 == 0 {
@@ -313,6 +344,9 @@ func (a Address) Format(s fmt.State, c rune) {
 // SetBytes sets the address to the value of b.
 // If b is larger than len(a), b will be cropped from the left.
 func (a *Address) SetBytes(b []byte) {
+	for i := range a {
+		a[i] = 0
+	}
 	if len(b) > len(a) {
 		b = b[len(b)-AddressLength:]
 	}
@@ -326,30 +360,43 @@ func (a Address) MarshalText() ([]byte, error) {
 
 // UnmarshalText parses a hash in hex syntax.
 func (a *Address) UnmarshalText(input []byte) error {
-	return hexutil.UnmarshalFixedText("Address", input, a[:])
+	raw, err := decodeAddressText(input, false)
+	if err != nil {
+		return err
+	}
+	a.SetBytes(raw)
+	return nil
 }
 
 // UnmarshalJSON parses a hash in hex syntax.
 func (a *Address) UnmarshalJSON(input []byte) error {
-	return hexutil.UnmarshalFixedJSON(addressT, input, a[:])
+	raw, err := decodeAddressJSON(input)
+	if err != nil {
+		return err
+	}
+	a.SetBytes(raw)
+	return nil
 }
 
 // Scan implements Scanner for database/sql.
 func (a *Address) Scan(src interface{}) error {
-	srcB, ok := src.([]byte)
-	if !ok {
+	switch src := src.(type) {
+	case []byte:
+		if !isAcceptedAddressLength(len(src)) {
+			return fmt.Errorf("can't scan []byte of len %d into Address, want 20, %d or %d", len(src), LegacyAddressLength, AddressLength)
+		}
+		a.SetBytes(src)
+		return nil
+	case string:
+		return a.UnmarshalText([]byte(src))
+	default:
 		return fmt.Errorf("can't scan %T into Address", src)
 	}
-	if len(srcB) != AddressLength {
-		return fmt.Errorf("can't scan []byte of len %d into Address, want %d", len(srcB), AddressLength)
-	}
-	copy(a[:], srcB)
-	return nil
 }
 
 // Value implements valuer for database/sql.
 func (a Address) Value() (driver.Value, error) {
-	return a[:], nil
+	return a.CompactBytes(), nil
 }
 
 // ImplementsGraphQLType returns true if Hash implements the specified GraphQL type.
@@ -372,12 +419,18 @@ type UnprefixedAddress Address
 
 // UnmarshalText decodes the address from hex. The 0x prefix is optional.
 func (a *UnprefixedAddress) UnmarshalText(input []byte) error {
-	return hexutil.UnmarshalFixedUnprefixedText("UnprefixedAddress", input, a[:])
+	raw, err := decodeAddressText(input, false)
+	if err != nil {
+		return err
+	}
+	(*Address)(a).SetBytes(raw)
+	return nil
 }
 
 // MarshalText encodes the address as hex.
 func (a UnprefixedAddress) MarshalText() ([]byte, error) {
-	return []byte(hex.EncodeToString(a[:])), nil
+	addr := Address(a)
+	return []byte(hex.EncodeToString(addr[:])), nil
 }
 
 // MixedcaseAddress retains the original string, which may or may not be
@@ -403,10 +456,15 @@ func NewMixedcaseAddressFromString(hexaddr string) (*MixedcaseAddress, error) {
 
 // UnmarshalJSON parses MixedcaseAddress
 func (ma *MixedcaseAddress) UnmarshalJSON(input []byte) error {
-	if err := hexutil.UnmarshalFixedJSON(addressT, input, ma.addr[:]); err != nil {
+	var original string
+	if err := json.Unmarshal(input, &original); err != nil {
 		return err
 	}
-	return json.Unmarshal(input, &ma.original)
+	if err := ma.addr.UnmarshalText([]byte(original)); err != nil {
+		return err
+	}
+	ma.original = original
+	return nil
 }
 
 // MarshalJSON marshals the original value

@@ -332,8 +332,8 @@ func importHistory(ctx *cli.Context) error {
 		switch {
 		case ctx.Bool(MainnetFlag.Name):
 			network = "mainnet"
-		case ctx.Bool(NeoDawnFlag.Name):
-			network = "neodawn"
+		case ctx.Bool(AetherNexusFlag.Name):
+			network = "aetherNexus"
 		case ctx.Bool(AetherForgeFlag.Name):
 			network = "aetherForge"
 		case ctx.Bool(AetherBloomFlag.Name):

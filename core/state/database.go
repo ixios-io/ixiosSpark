@@ -190,7 +190,7 @@ func (db *cachingDB) OpenStorageTrie(stateRoot common.Hash, address common.Addre
 	if db.triedb.IsVerkle() {
 		return self, nil
 	}
-	tr, err := trie.NewStateTrie(trie.StorageTrieID(stateRoot, crypto.Keccak256Hash(address.Bytes()), root), db.triedb)
+	tr, err := trie.NewStateTrie(trie.StorageTrieID(stateRoot, crypto.Keccak256Hash(address.CompactBytes()), root), db.triedb)
 	if err != nil {
 		return nil, err
 	}

@@ -37,7 +37,11 @@ func MakeTopics(query ...[]interface{}) ([][]common.Hash, error) {
 			case common.Hash:
 				copy(topic[:], rule[:])
 			case common.Address:
-				copy(topic[common.HashLength-common.AddressLength:], rule[:])
+				addr := rule.CompactBytes()
+				if len(addr) > common.HashLength {
+					addr = addr[len(addr)-common.HashLength:]
+				}
+				copy(topic[common.HashLength-len(addr):], addr)
 			case *big.Int:
 				copy(topic[:], math.U256Bytes(rule))
 			case bool:

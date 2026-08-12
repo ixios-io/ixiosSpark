@@ -252,24 +252,24 @@ func opKeccak256(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) (
 }
 
 func opAddress(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	scope.Stack.push(new(uint256.Int).SetBytes(scope.Contract.Address().Bytes()))
+	scope.Stack.push(new(uint256.Int).SetBytes(AddressToStackBytes(scope.Contract.Address())))
 	return nil, nil
 }
 
 func opBalance(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
-	address := common.Address(slot.Bytes32())
+	address := WordToAddress(slot)
 	slot.Set(interpreter.evm.StateDB.GetBalance(address))
 	return nil, nil
 }
 
 func opOrigin(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	scope.Stack.push(new(uint256.Int).SetBytes(interpreter.evm.Origin.Bytes()))
+	scope.Stack.push(new(uint256.Int).SetBytes(AddressToStackBytes(interpreter.evm.Origin)))
 	return nil, nil
 }
 
 func opCaller(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
-	scope.Stack.push(new(uint256.Int).SetBytes(scope.Contract.Caller().Bytes()))
+	scope.Stack.push(new(uint256.Int).SetBytes(AddressToStackBytes(scope.Contract.Caller())))
 	return nil, nil
 }
 
@@ -341,7 +341,8 @@ func opReturnDataCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeConte
 
 func opExtCodeSize(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
-	slot.SetUint64(uint64(interpreter.evm.StateDB.GetCodeSize(slot.Bytes32())))
+	address := WordToAddress(slot)
+	slot.SetUint64(uint64(interpreter.evm.StateDB.GetCodeSize(address)))
 	return nil, nil
 }
 
@@ -378,7 +379,7 @@ func opExtCodeCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext)
 	if overflow {
 		uint64CodeOffset = math.MaxUint64
 	}
-	addr := common.Address(a.Bytes32())
+	addr := WordToAddress(&a)
 	codeCopy := getData(interpreter.evm.StateDB.GetCode(addr), uint64CodeOffset, length.Uint64())
 	scope.Memory.Set(memOffset.Uint64(), length.Uint64(), codeCopy)
 
@@ -413,7 +414,7 @@ func opExtCodeCopy(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext)
 //     account should be regarded as a non-existent account and zero should be returned.
 func opExtCodeHash(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byte, error) {
 	slot := scope.Stack.peek()
-	address := common.Address(slot.Bytes32())
+	address := WordToAddress(slot)
 	if interpreter.evm.StateDB.Empty(address) {
 		slot.Clear()
 	} else {
@@ -599,7 +600,7 @@ func opCreate(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]b
 	} else if suberr != nil && suberr != ErrCodeStoreOutOfGas {
 		stackvalue.Clear()
 	} else {
-		stackvalue.SetBytes(addr.Bytes())
+		stackvalue.SetBytes(AddressToStackBytes(addr))
 	}
 	scope.Stack.push(&stackvalue)
 	scope.Contract.Gas += returnGas
@@ -634,7 +635,7 @@ func opCreate2(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]
 	if suberr != nil {
 		stackvalue.Clear()
 	} else {
-		stackvalue.SetBytes(addr.Bytes())
+		stackvalue.SetBytes(AddressToStackBytes(addr))
 	}
 	scope.Stack.push(&stackvalue)
 	scope.Contract.Gas += returnGas
@@ -655,7 +656,7 @@ func opCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([]byt
 	gas := interpreter.evm.callGasTemp
 	// Pop other call parameters.
 	addr, value, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
-	toAddr := common.Address(addr.Bytes32())
+	toAddr := WordToAddress(&addr)
 	// Get the arguments from the memory.
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
@@ -690,7 +691,7 @@ func opCallCode(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) ([
 	gas := interpreter.evm.callGasTemp
 	// Pop other call parameters.
 	addr, value, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
-	toAddr := common.Address(addr.Bytes32())
+	toAddr := WordToAddress(&addr)
 	// Get arguments from the memory.
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
@@ -722,7 +723,7 @@ func opDelegateCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 	gas := interpreter.evm.callGasTemp
 	// Pop other call parameters.
 	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
-	toAddr := common.Address(addr.Bytes32())
+	toAddr := WordToAddress(&addr)
 	// Get arguments from the memory.
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
@@ -750,7 +751,7 @@ func opStaticCall(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext) 
 	gas := interpreter.evm.callGasTemp
 	// Pop other call parameters.
 	addr, inOffset, inSize, retOffset, retSize := stack.pop(), stack.pop(), stack.pop(), stack.pop(), stack.pop()
-	toAddr := common.Address(addr.Bytes32())
+	toAddr := WordToAddress(&addr)
 	// Get arguments from the memory.
 	args := scope.Memory.GetPtr(int64(inOffset.Uint64()), int64(inSize.Uint64()))
 
@@ -798,11 +799,12 @@ func opSelfdestruct(pc *uint64, interpreter *EVMInterpreter, scope *ScopeContext
 		return nil, ErrWriteProtection
 	}
 	beneficiary := scope.Stack.pop()
+	beneficiaryAddr := WordToAddress(&beneficiary)
 	balance := interpreter.evm.StateDB.GetBalance(scope.Contract.Address())
-	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes32(), balance)
+	interpreter.evm.StateDB.AddBalance(beneficiaryAddr, balance)
 	interpreter.evm.StateDB.SelfDestruct(scope.Contract.Address())
 	if tracer := interpreter.evm.Config.Tracer; tracer != nil {
-		tracer.CaptureEnter(SELFDESTRUCT, scope.Contract.Address(), beneficiary.Bytes32(), []byte{}, 0, balance.ToBig())
+		tracer.CaptureEnter(SELFDESTRUCT, scope.Contract.Address(), beneficiaryAddr, []byte{}, 0, balance.ToBig())
 		tracer.CaptureExit([]byte{}, 0, nil)
 	}
 	return nil, errStopToken
@@ -813,12 +815,13 @@ func opSelfdestruct6780(pc *uint64, interpreter *EVMInterpreter, scope *ScopeCon
 		return nil, ErrWriteProtection
 	}
 	beneficiary := scope.Stack.pop()
+	beneficiaryAddr := WordToAddress(&beneficiary)
 	balance := interpreter.evm.StateDB.GetBalance(scope.Contract.Address())
 	interpreter.evm.StateDB.SubBalance(scope.Contract.Address(), balance)
-	interpreter.evm.StateDB.AddBalance(beneficiary.Bytes32(), balance)
+	interpreter.evm.StateDB.AddBalance(beneficiaryAddr, balance)
 	interpreter.evm.StateDB.Selfdestruct6780(scope.Contract.Address())
 	if tracer := interpreter.evm.Config.Tracer; tracer != nil {
-		tracer.CaptureEnter(SELFDESTRUCT, scope.Contract.Address(), beneficiary.Bytes32(), []byte{}, 0, balance.ToBig())
+		tracer.CaptureEnter(SELFDESTRUCT, scope.Contract.Address(), beneficiaryAddr, []byte{}, 0, balance.ToBig())
 		tracer.CaptureExit([]byte{}, 0, nil)
 	}
 	return nil, errStopToken

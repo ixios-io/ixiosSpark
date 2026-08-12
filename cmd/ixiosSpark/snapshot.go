@@ -43,7 +43,7 @@ var (
 		Subcommands: []*cli.Command{
 			{
 				Name:      "prune-state",
-				Usage:     "Prune stale ethereum state data based on the snapshot",
+				Usage:     "Prune stale state data based on the snapshot",
 				ArgsUsage: "<root>",
 				Action:    pruneState,
 				Flags: flags.Merge([]cli.Flag{
@@ -664,11 +664,12 @@ func checkAccount(ctx *cli.Context) error {
 		hash common.Hash
 		addr common.Address
 	)
-	switch arg := ctx.Args().First(); len(arg) {
-	case 40, 42:
+	arg := ctx.Args().First()
+	switch {
+	case common.IsHexAddress(arg):
 		addr = common.HexToAddress(arg)
-		hash = crypto.Keccak256Hash(addr.Bytes())
-	case 64, 66:
+		hash = crypto.Keccak256Hash(addr.CompactBytes())
+	case len(arg) == 64 || len(arg) == 66:
 		hash = common.HexToHash(arg)
 	default:
 		return errors.New("malformed address or hash")

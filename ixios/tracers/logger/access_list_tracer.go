@@ -142,13 +142,13 @@ func (a *AccessListTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint6
 		a.list.addSlot(scope.Contract.Address(), slot)
 	}
 	if (op == vm.EXTCODECOPY || op == vm.EXTCODEHASH || op == vm.EXTCODESIZE || op == vm.BALANCE || op == vm.SELFDESTRUCT) && stackLen >= 1 {
-		addr := common.Address(stackData[stackLen-1].Bytes32())
+		addr := vm.WordToAddress(&stackData[stackLen-1])
 		if _, ok := a.excl[addr]; !ok {
 			a.list.addAddress(addr)
 		}
 	}
 	if (op == vm.DELEGATECALL || op == vm.CALL || op == vm.STATICCALL || op == vm.CALLCODE) && stackLen >= 5 {
-		addr := common.Address(stackData[stackLen-2].Bytes32())
+		addr := vm.WordToAddress(&stackData[stackLen-2])
 		if _, ok := a.excl[addr]; !ok {
 			a.list.addAddress(addr)
 		}

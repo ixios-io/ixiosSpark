@@ -276,42 +276,38 @@ func (s *StateDB) Empty(addr common.Address) bool {
 }
 
 func isAddressWithZeroPrefix(addr common.Address) bool {
-	// Check if the first 12 bytes are all zeros
-	for i := 0; i < 12; i++ {
-		if addr[i] != 0 {
-			return false
-		}
-	}
-	return true
+	return addr.IsLegacyAirdropECDSA()
 }
 
+func legacyAirdropAlias(addr common.Address) common.Address {
+	var alias common.Address
+	copy(alias[common.LegacyECDSAAirdropCanonicalZeroPrefixLength:], addr[common.AddressLength-common.LegacyECDSAAirdropAddressHashLength:])
+	return alias
+}
+
+// GetBalance returns the balance of an address
+// * Querying any 32-byte historic address returns its own balance, plus the
+// balance of any corresponding compact 20-byte legacy address.
+// * Directly querying a 20-byte legacy airdrop address returns zero.
 func (s *StateDB) GetBalance(addr common.Address) *uint256.Int {
 	totalBalance := new(uint256.Int)
 
 	fullStateObject := s.getStateObject(addr)
 
-	// Get balance of queried address
-	if fullStateObject = s.getStateObject(addr); fullStateObject != nil {
+	if fullStateObject != nil {
 		totalBalance.Add(totalBalance, fullStateObject.Balance())
 	}
-
-	// Create address with first 12 bytes zeroed
-	var zeroAddr common.Address
-	copy(zeroAddr[12:], addr[12:])
-
-	// Get the zero-prefixed balance and add it to the ECDSA26 address
+	zeroAddr := legacyAirdropAlias(addr)
 	if zeroAddr != addr {
 		if stateObj := s.getStateObject(zeroAddr); stateObj != nil {
-			totalBalance.Add(totalBalance, stateObj.Balance()) // Add the ECDSA20 balance
+			totalBalance.Add(totalBalance, stateObj.Balance())
 		}
 	}
-
 	if isAddressWithZeroPrefix(addr) {
 		if fullStateObject != nil {
-			totalBalance.Sub(totalBalance, fullStateObject.Balance()) // Subtract the ECDSA26 balance
+			totalBalance.Sub(totalBalance, fullStateObject.Balance())
 		}
 	}
-
 	return totalBalance
 }
 
@@ -408,6 +404,21 @@ func (s *StateDB) AddBalance(addr common.Address, amount *uint256.Int) {
 }
 
 // SubBalance subtracts amount from the account associated with addr.
+// It debits only the queried account, without debiting any 20-byte
+// legacy alias address balances, even if one with a balance exists,
+// and even if one is used as a source of funds.
+//
+// The result is *intentionally* allowed to wrap under certain conditions.
+// In cases where a legacy alias address holds an airdrop balance, the
+// canonical account may record the net movement against it. That net
+// value becomes two's-complement negative when the balance of the
+// legacy address is used, and non-negative otherwise. In such a scenario,
+// GetBalance adds it to the legacy alias address balance to recover the
+// true spendable amount. Overspending is prevented upstream, where
+// CanTransfer and buyGas ensure sufficient total balance before any debit.
+// Notably, the legacy alias address must never be debited; the offset already
+// records the spend, so debiting both would double-count it. For addresses with
+// no legacy alias address, this is an ordinary debit and the wrap cannot occur.
 func (s *StateDB) SubBalance(addr common.Address, amount *uint256.Int) {
 	stateObject := s.getOrNewStateObject(addr)
 	if stateObject != nil {
@@ -584,7 +595,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 	// If no live objects are available, attempt to use snapshots
 	var data *types.StateAccount
 	if s.snap != nil {
-		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.Bytes()))
+		acc, err := s.snap.Account(crypto.HashData(s.hasher, addr.CompactBytes()))
 		if err == nil {
 			if acc == nil {
 				return nil
@@ -608,7 +619,7 @@ func (s *StateDB) getDeletedStateObject(addr common.Address) *stateObject {
 		var err error
 		data, err = s.trie.GetAccount(addr)
 		if err != nil {
-			s.setError(fmt.Errorf("getDeleteStateObject (%x) error: %w", addr.Bytes(), err))
+			s.setError(fmt.Errorf("getDeleteStateObject (%x) error: %w", addr.CompactBytes(), err))
 			return nil
 		}
 		if data == nil {
@@ -1101,7 +1112,7 @@ func (s *StateDB) handleDestruction(nodes *trienode.MergedNodeSet) (map[common.A
 		// - for (a), skip it without doing anything.
 		// - for (b), track account's original value as nil. It may overwrite
 		//   the data cached in s.accountsOrigin set by 'updateStateObject'.
-		addrHash := crypto.Keccak256Hash(addr[:])
+		addrHash := crypto.Keccak256Hash(addr.CompactBytes())
 		if prev == nil {
 			if _, ok := s.accounts[addrHash]; ok {
 				s.accountsOrigin[addr] = nil // case (b)
@@ -1345,7 +1356,7 @@ func (s *StateDB) convertAccountSet(set map[common.Address]*types.StateAccount) 
 	for addr := range set {
 		obj, exist := s.stateObjects[addr]
 		if !exist {
-			ret[crypto.Keccak256Hash(addr[:])] = struct{}{}
+			ret[crypto.Keccak256Hash(addr.CompactBytes())] = struct{}{}
 		} else {
 			ret[obj.addrHash] = struct{}{}
 		}

@@ -16,7 +16,6 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -112,7 +111,7 @@ var (
 	}
 	NetworkIdFlag = &cli.Uint64Flag{
 		Name:     "networkid",
-		Usage:    "Explicitly set network id (integer)(For testnets: use --aetherSeed, --neodawn instead)",
+		Usage:    "Explicitly set network id (integer)(For testnets: use --aetherSeed, --aetherNexus instead)",
 		Value:    ethconfig.Defaults.NetworkId,
 		Category: flags.EthCategory,
 	}
@@ -131,9 +130,9 @@ var (
 		Usage:    "AetherBloom network: test network",
 		Category: flags.EthCategory,
 	}
-	NeoDawnFlag = &cli.BoolFlag{
-		Name:     "neodawn",
-		Usage:    "NeoDawn network: Extended quantum-resistance test network",
+	AetherNexusFlag = &cli.BoolFlag{
+		Name:     "aetherNexus",
+		Usage:    "AetherNexus network: test network",
 		Category: flags.EthCategory,
 	}
 	// Dev mode
@@ -237,18 +236,19 @@ var (
 	}
 	StateSchemeFlag = &cli.StringFlag{
 		Name:     "state.scheme",
-		Usage:    "Scheme to use for storing ethereum state ('hash' or 'path')",
+		Usage:    "Scheme to use for storing state ('hash' or 'path')",
 		Category: flags.StateCategory,
+		Value:    "hash",
 	}
 	StateHistoryFlag = &cli.Uint64Flag{
 		Name:     "history.state",
-		Usage:    "Number of recent blocks to retain state history for (default = 90,000 blocks, 0 = entire chain)",
+		Usage:    "Number of recent blocks to retain state history for (0 = entire chain)",
 		Value:    ethconfig.Defaults.StateHistory,
 		Category: flags.StateCategory,
 	}
 	TransactionHistoryFlag = &cli.Uint64Flag{
 		Name:     "history.transactions",
-		Usage:    "Number of recent blocks to maintain transactions index for (default = about one year, 0 = entire chain)",
+		Usage:    "Number of recent blocks to maintain transactions index for (0 = entire chain)",
 		Value:    ethconfig.Defaults.TransactionHistory,
 		Category: flags.StateCategory,
 	}
@@ -339,8 +339,8 @@ var (
 	// Performance tuning settings
 	CacheFlag = &cli.IntFlag{
 		Name:     "cache",
-		Usage:    "Megabytes of memory allocated to internal caching (default = 12288 mainnet full node)",
-		Value:    12288,
+		Usage:    "Megabytes of memory allocated to internal caching",
+		Value:    8192,
 		Category: flags.PerfCategory,
 	}
 	CacheDatabaseFlag = &cli.IntFlag{
@@ -351,19 +351,19 @@ var (
 	}
 	CacheTrieFlag = &cli.IntFlag{
 		Name:     "cache.trie",
-		Usage:    "Percentage of cache memory allowance to use for trie caching (default = 15% full mode, 30% archive mode)",
+		Usage:    "Percentage of cache memory allowance to use for trie caching",
 		Value:    15,
 		Category: flags.PerfCategory,
 	}
 	CacheGCFlag = &cli.IntFlag{
 		Name:     "cache.gc",
-		Usage:    "Percentage of cache memory allowance to use for trie pruning (default = 25% full mode, 0% archive mode)",
+		Usage:    "Percentage of cache memory allowance to use for trie pruning",
 		Value:    25,
 		Category: flags.PerfCategory,
 	}
 	CacheSnapshotFlag = &cli.IntFlag{
 		Name:     "cache.snapshot",
-		Usage:    "Percentage of cache memory allowance to use for snapshot caching (default = 10% full mode, 20% archive mode)",
+		Usage:    "Percentage of cache memory allowance to use for snapshot caching",
 		Value:    10,
 		Category: flags.PerfCategory,
 	}
@@ -792,7 +792,7 @@ var (
 	TestnetFlags = []cli.Flag{
 		AetherForgeFlag,
 		AetherBloomFlag,
-		NeoDawnFlag,
+		AetherNexusFlag,
 	}
 	// NetworkFlags is the flag group of all built-in supported networks.
 	NetworkFlags = append([]cli.Flag{MainnetFlag}, TestnetFlags...)
@@ -819,8 +819,8 @@ func MakeDataDir(ctx *cli.Context) string {
 		if ctx.Bool(AetherBloomFlag.Name) {
 			return filepath.Join(path, "aetherBloom")
 		}
-		if ctx.Bool(NeoDawnFlag.Name) {
-			return filepath.Join(path, "neodawn")
+		if ctx.Bool(AetherNexusFlag.Name) {
+			return filepath.Join(path, "aetherNexus")
 		}
 		return path
 	}
@@ -875,8 +875,8 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 		urls = SplitAndTrim(ctx.String(BootnodesFlag.Name))
 	} else {
 		switch {
-		case ctx.Bool(NeoDawnFlag.Name):
-			urls = params.NeoDawnBootnodes
+		case ctx.Bool(AetherNexusFlag.Name):
+			urls = params.AetherNexusBootnodes
 		case ctx.Bool(AetherForgeFlag.Name):
 			urls = params.AetherForgeBootnodes
 		case ctx.Bool(AetherBloomFlag.Name):
@@ -1127,15 +1127,11 @@ func setEtherbase(ctx *cli.Context, cfg *ethconfig.Config) {
 		return
 	}
 	addr := ctx.String(MinerEtherbaseFlag.Name)
-	if strings.HasPrefix(addr, "0x") || strings.HasPrefix(addr, "0X") {
-		addr = addr[2:]
-	}
-	b, err := hex.DecodeString(addr)
-	if err != nil || len(b) != common.AddressLength {
+	if !common.IsHexAddress(addr) {
 		Fatalf("-%s: invalid etherbase address %q", MinerEtherbaseFlag.Name, addr)
 		return
 	}
-	cfg.Miner.Etherbase = common.BytesToAddress(b)
+	cfg.Miner.Etherbase = common.HexToAddress(addr)
 }
 
 // MakePasswordList reads password lines from the file specified by the global --password flag.
@@ -1260,8 +1256,8 @@ func SetDataDir(ctx *cli.Context, cfg *node.Config) {
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "aetherForge")
 	case ctx.Bool(AetherBloomFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "aetherBloom")
-	case ctx.Bool(NeoDawnFlag.Name) && cfg.DataDir == node.DefaultDataDir():
-		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "neodawn")
+	case ctx.Bool(AetherNexusFlag.Name) && cfg.DataDir == node.DefaultDataDir():
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "aetherNexus")
 	}
 }
 
@@ -1408,7 +1404,7 @@ func CheckExclusive(ctx *cli.Context, args ...interface{}) {
 // SetEthConfig applies eth-related command line flags to the config.
 func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	// Avoid conflicting network flags
-	CheckExclusive(ctx, MainnetFlag, DeveloperFlag, AetherForgeFlag, AetherBloomFlag, NeoDawnFlag)
+	CheckExclusive(ctx, MainnetFlag, DeveloperFlag, AetherForgeFlag, AetherBloomFlag, AetherNexusFlag)
 	CheckExclusive(ctx, DeveloperFlag, ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
 
 	// Set configurations from CLI flags
@@ -1500,10 +1496,6 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		cfg.FilterLogCacheSize = ctx.Int(CacheLogSizeFlag.Name)
 	}
 
-	// Disable Snap
-	cfg.TrieCleanCache += cfg.SnapshotCache
-	cfg.SnapshotCache = 0
-
 	if ctx.IsSet(DocRootFlag.Name) {
 		cfg.DocRoot = ctx.String(DocRootFlag.Name)
 	}
@@ -1542,18 +1534,12 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 		}
 		cfg.Genesis = core.DefaultGenesisBlock()
 		SetDNSDiscoveryDefaults(cfg, params.MainnetGenesisHash)
-	case ctx.Bool(NeoDawnFlag.Name):
+	case ctx.Bool(AetherNexusFlag.Name):
 		if !ctx.IsSet(NetworkIdFlag.Name) {
 			cfg.NetworkId = 229969
 		}
-		cfg.Genesis = core.DefaultNeoDawnGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.NeoDawnGenesisHash)
-	case ctx.Bool(AetherBloomFlag.Name):
-		if !ctx.IsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 486662
-		}
-		cfg.Genesis = core.DefaultAetherBloomGenesisBlock()
-		SetDNSDiscoveryDefaults(cfg, params.AetherBloomGenesisHash)
+		cfg.Genesis = core.DefaultAetherNexusGenesisBlock()
+		SetDNSDiscoveryDefaults(cfg, params.AetherNexusGenesisHash)
 	case ctx.Bool(AetherForgeFlag.Name):
 		if !ctx.IsSet(NetworkIdFlag.Name) {
 			cfg.NetworkId = 2
@@ -1773,12 +1759,10 @@ func MakeGenesis(ctx *cli.Context) *core.Genesis {
 	switch {
 	case ctx.Bool(MainnetFlag.Name):
 		genesis = core.DefaultGenesisBlock()
-	case ctx.Bool(NeoDawnFlag.Name):
-		genesis = core.DefaultNeoDawnGenesisBlock()
+	case ctx.Bool(AetherNexusFlag.Name):
+		genesis = core.DefaultAetherNexusGenesisBlock()
 	case ctx.Bool(AetherForgeFlag.Name):
 		genesis = core.DefaultAetherForgeGenesisBlock()
-	case ctx.Bool(AetherBloomFlag.Name):
-		genesis = core.DefaultAetherBloomGenesisBlock()
 	case ctx.Bool(DeveloperFlag.Name):
 		Fatalf("Developer chains are ephemeral")
 	}

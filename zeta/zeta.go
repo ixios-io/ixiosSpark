@@ -15,12 +15,39 @@ package zeta
 
 import (
 	"math/big"
+
+	"github.com/ixios-io/ixiosSpark/params"
 )
 
 const (
 	secondsPerYear = 31536000
 	decayRate      = 930000000000000000
+
+	preAegisMinimumGasPriceZeta  int64 = 1
+	postAegisMinimumGasPriceZeta int64 = 100
 )
+
+// MinimumGasPriceZeta returns the required minimum gas price in zeta
+// units for the given block. Before Aegis the floor is 1 zeta. Once Aegis is
+// active, the floor becomes 100 zeta.
+func MinimumGasPriceZeta(config *params.ChainConfig, blockNumber *big.Int) int64 {
+	if config != nil && blockNumber != nil && config.IsAddressFormat(blockNumber) {
+		return postAegisMinimumGasPriceZeta
+	}
+	return preAegisMinimumGasPriceZeta
+}
+
+// CalculateMinimumGasPrice returns the minimum transaction gas price in wei for
+// the given block, applying the Aegis fork multiplier to the underlying zeta
+// value.
+func CalculateMinimumGasPrice(config *params.ChainConfig, blockNumber *big.Int) *big.Int {
+	minimumGasPrice := CalculateZetaValue(blockNumber)
+	multiplier := MinimumGasPriceZeta(config, blockNumber)
+	if multiplier == 1 {
+		return minimumGasPrice
+	}
+	return minimumGasPrice.Mul(minimumGasPrice, big.NewInt(multiplier))
+}
 
 func CalculateZetaValue(blockNumber *big.Int) *big.Int {
 	// Constants

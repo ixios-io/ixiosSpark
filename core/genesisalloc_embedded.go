@@ -47,8 +47,7 @@ func ParseGenesisAllocData() (map[common.Address]types.Account, error) {
 		chunk := embeddedGenesisAlloc[i : i+chunkSize]
 
 		// address
-		var addr common.Address
-		copy(addr[:], chunk[:addressSize])
+		addr := common.BytesToAddress(chunk[:addressSize])
 
 		// balance
 		balanceBytes := chunk[addressSize:chunkSize]

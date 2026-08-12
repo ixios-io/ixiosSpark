@@ -282,7 +282,7 @@ func (sf *subfetcher) loop() {
 					if _, ok := sf.seen[string(task)]; ok {
 						sf.dups++
 					} else {
-						if len(task) == common.AddressLength {
+						if len(task) == common.AddressLength || len(task) == common.LegacyAddressLength {
 							sf.trie.GetAccount(common.BytesToAddress(task))
 						} else {
 							sf.trie.GetStorage(sf.addr, task)

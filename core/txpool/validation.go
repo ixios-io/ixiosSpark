@@ -94,8 +94,12 @@ func ValidateTransaction(tx *types.Transaction, head *types.Header, signer types
 		return core.ErrTipAboveFeeCap
 	}
 	// Make sure the transaction is signed properly
-	if _, err := types.Sender(signer, tx); err != nil {
+	from, err := types.Sender(signer, tx)
+	if err != nil {
 		return ErrInvalidSender
+	}
+	if err := core.ValidateTxAddressFormats(opts.Config, head.Number, tx, from); err != nil {
+		return err
 	}
 	// Ensure the transaction has more gas than the bare minimum needed to cover
 	// the transaction metadata

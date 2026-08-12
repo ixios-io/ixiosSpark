@@ -231,7 +231,7 @@ func storageRangeAt(statedb *state.StateDB, root common.Hash, address common.Add
 	if storageRoot == types.EmptyRootHash || storageRoot == (common.Hash{}) {
 		return StorageRangeResult{}, nil // empty storage
 	}
-	id := trie.StorageTrieID(root, crypto.Keccak256Hash(address.Bytes()), storageRoot)
+	id := trie.StorageTrieID(root, crypto.Keccak256Hash(address.CompactBytes()), storageRoot)
 	tr, err := trie.NewStateTrie(id, statedb.Database().TrieDB())
 	if err != nil {
 		return StorageRangeResult{}, err

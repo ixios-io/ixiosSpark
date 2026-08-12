@@ -57,7 +57,7 @@ var DefaultConfig = Config{
 	GasCeil:  30000000,
 	GasPrice: big.NewInt(params.GWei),
 
-	// For Ixios with 1s blocks:
+	// For ~1s target block time:
 	// - Give ~350ms for tx execution and block building
 	// - Allow time for network propagation
 	// - Leave buffer for next block
@@ -149,7 +149,7 @@ func (sealer *Sealer) update() {
 			}
 		case <-sealer.startCh:
 			if canStart {
-				// Add 3 second delay on initial start
+				// Add ~3 second delay on initial start
 				log.Info("Waiting ~3 seconds before starting sealer")
 				time.Sleep(2500 * time.Millisecond)
 

@@ -96,7 +96,7 @@ func (t *StateTrie) GetStorage(_ common.Address, key []byte) ([]byte, error) {
 // If the specified account is not in the trie, nil will be returned.
 // If a trie node is not found in the database, a MissingNodeError is returned.
 func (t *StateTrie) GetAccount(address common.Address) (*types.StateAccount, error) {
-	res, err := t.trie.Get(t.hashKey(address.Bytes()))
+	res, err := t.trie.Get(t.hashKey(address.CompactBytes()))
 	if res == nil || err != nil {
 		return nil, err
 	}
@@ -162,7 +162,7 @@ func (t *StateTrie) UpdateStorage(_ common.Address, key, value []byte) error {
 
 // UpdateAccount will abstract the write of an account to the secure trie.
 func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccount) error {
-	hk := t.hashKey(address.Bytes())
+	hk := t.hashKey(address.CompactBytes())
 	data, err := rlp.EncodeToBytes(acc)
 	if err != nil {
 		return err
@@ -170,7 +170,7 @@ func (t *StateTrie) UpdateAccount(address common.Address, acc *types.StateAccoun
 	if err := t.trie.Update(hk, data); err != nil {
 		return err
 	}
-	t.getSecKeyCache()[string(hk)] = address.Bytes()
+	t.getSecKeyCache()[string(hk)] = common.CopyBytes(address.CompactBytes())
 	return nil
 }
 
@@ -197,7 +197,7 @@ func (t *StateTrie) DeleteStorage(_ common.Address, key []byte) error {
 
 // DeleteAccount abstracts an account deletion from the trie.
 func (t *StateTrie) DeleteAccount(address common.Address) error {
-	hk := t.hashKey(address.Bytes())
+	hk := t.hashKey(address.CompactBytes())
 	delete(t.getSecKeyCache(), string(hk))
 	return t.trie.Delete(hk)
 }

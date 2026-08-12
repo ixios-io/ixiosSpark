@@ -64,10 +64,7 @@ func (r *serviceRegistry) registerName(name string, rcvr interface{}) error {
 		return fmt.Errorf("service %T doesn't have any suitable methods/subscriptions to expose", rcvr)
 	}
 
-	if !r.mu.TryLock() {
-		log.Error("Failed to acquire lock for service %s", name)
-		return fmt.Errorf("service %T has already been registered", rcvr)
-	}
+	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.services == nil {
 		r.services = make(map[string]service)
@@ -97,10 +94,7 @@ func (r *serviceRegistry) callback(method string) *callback {
 	if !found {
 		return nil
 	}
-	if !r.mu.TryLock() {
-		log.Error("Failed to acquire lock for callback %s.", method)
-		return nil
-	}
+	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.services[before].callbacks[after]
 }

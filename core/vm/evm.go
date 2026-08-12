@@ -427,6 +427,8 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 		return nil, common.Address{}, gas, fmt.Errorf("contract creation restricted to %s", ContractDeployerAddress.Hex())
 	}
 
+	return nil, common.Address{}, gas, fmt.Errorf("contract creation disabled")
+
 	// Depth check execution. Fail if we're trying to execute above the limit.
 	if evm.depth > int(params.CallCreateDepth) {
 		return nil, common.Address{}, gas, ErrDepth

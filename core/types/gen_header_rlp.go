@@ -13,7 +13,7 @@ func (obj *Header) EncodeRLP(_w io.Writer) error {
 	_tmp0 := w.List()
 	w.WriteBytes(obj.ParentHash[:])
 	w.WriteBytes(obj.OmmerHash[:])
-	w.WriteBytes(obj.Coinbase[:])
+	w.WriteBytes(obj.Coinbase.CompactBytes())
 	w.WriteBytes(obj.Root[:])
 	w.WriteBytes(obj.TxHash[:])
 	w.WriteBytes(obj.ReceiptHash[:])

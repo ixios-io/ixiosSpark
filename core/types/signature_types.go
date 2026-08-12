@@ -14,42 +14,27 @@
 package types
 
 import (
-	"bytes"
-
 	"github.com/ixios-io/ixiosSpark/common"
-	"github.com/ixios-io/ixiosSpark/params"
 )
 
-// Signature scheme identifiers as byte arrays for direct comparison
+// Signature scheme identifiers as byte arrays for direct comparison.
 var (
-	SigTypeECDSA2    = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00} // ECDSA-2 (legacy)
-	SigTypeECDSA26   = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x01} // ECDSA-26
-	SigTypeDilith2   = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x02} // Dilithium-2
-	SigTypeDilith3   = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x03} // Dilithium-3
-	SigTypeDilith5   = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x05} // Dilithium-5
-	SigTypeFalcon512 = []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x06} // Falcon512
+	SigTypeECDSA   = []byte{0x00} // ECDSA (legacy)
+	SigTypeMLDSA87 = []byte{0x01} // MLDSA87
 )
 
-// GetSignatureType returns the signature type bytes from an address
+// GetSignatureType returns the signature type bytes from an address.
 func GetSignatureType(addr common.Address) []byte {
-	return addr[:params.SignaturePrefixLength]
+	if addr.IsECDSA() {
+		return []byte{SigTypeECDSA[0]}
+	}
+	return []byte{SigTypeMLDSA87[0]}
 }
 
-// IsValidSignatureType checks if the address starts with a valid signature prefix
+// IsValidSignatureType checks if the address maps to one of the supported
+// signature schemes. Canonical 48-byte addresses are always either ECDSA or
+// MLDSA87 under the post-fork format.
 func IsValidSignatureType(addr common.Address) bool {
-	prefix := GetSignatureType(addr)
-	return bytes.Equal(prefix, SigTypeECDSA2) ||
-		bytes.Equal(prefix, SigTypeECDSA26) ||
-		bytes.Equal(prefix, SigTypeDilith2) ||
-		bytes.Equal(prefix, SigTypeDilith3) ||
-		bytes.Equal(prefix, SigTypeDilith5) ||
-		bytes.Equal(prefix, SigTypeFalcon512)
-}
-
-// IsDilithiumAddress returns true if the address uses any Dilithium signature scheme
-func IsDilithiumAddress(addr common.Address) bool {
-	prefix := GetSignatureType(addr)
-	return bytes.Equal(prefix, SigTypeDilith2) ||
-		bytes.Equal(prefix, SigTypeDilith3) ||
-		bytes.Equal(prefix, SigTypeDilith5)
+	_ = addr
+	return true
 }

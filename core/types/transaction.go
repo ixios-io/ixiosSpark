@@ -512,6 +512,14 @@ func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, e
 	}
 	cpy := tx.inner.copy()
 	cpy.setSignatureValues(signer.ChainID(), v, r, s)
+	clearSignaturePayload(cpy)
+	if isMLDSA87SignatureEnvelope(sig) {
+		publicKey, signature, err := decodeMLDSA87SignatureEnvelope(sig)
+		if err != nil {
+			return nil, err
+		}
+		setSignaturePayload(cpy, SigTypeMLDSA87, publicKey, signature)
+	}
 	return &Transaction{inner: cpy, time: tx.time}, nil
 }
 

@@ -147,13 +147,13 @@ func (t *prestateTracer) CaptureState(pc uint64, op vm.OpCode, gas, cost uint64,
 		slot := common.Hash(stackData[stackLen-1].Bytes32())
 		t.lookupStorage(caller, slot)
 	case stackLen >= 1 && (op == vm.EXTCODECOPY || op == vm.EXTCODEHASH || op == vm.EXTCODESIZE || op == vm.BALANCE || op == vm.SELFDESTRUCT):
-		addr := common.Address(stackData[stackLen-1].Bytes32())
+		addr := vm.WordToAddress(&stackData[stackLen-1])
 		t.lookupAccount(addr)
 		if op == vm.SELFDESTRUCT {
 			t.deleted[caller] = true
 		}
 	case stackLen >= 5 && (op == vm.DELEGATECALL || op == vm.CALL || op == vm.STATICCALL || op == vm.CALLCODE):
-		addr := common.Address(stackData[stackLen-2].Bytes32())
+		addr := vm.WordToAddress(&stackData[stackLen-2])
 		t.lookupAccount(addr)
 	case op == vm.CREATE:
 		nonce := t.env.StateDB.GetNonce(caller)

@@ -235,7 +235,7 @@ func (ks *KeyStore) Delete(a accounts.Account, passphrase string) error {
 	// immediately afterwards.
 	a, key, err := ks.getDecryptedKey(a, passphrase)
 	if key != nil {
-		zeroKey(key.PrivateKey)
+		zeroKeyMaterial(key)
 	}
 	if err != nil {
 		return err
@@ -262,6 +262,9 @@ func (ks *KeyStore) SignHash(a accounts.Account, hash []byte) ([]byte, error) {
 	if !found {
 		return nil, ErrLocked
 	}
+	if !unlockedKey.isECDSA() {
+		return nil, accounts.ErrNotSupported
+	}
 	// Sign the hash using plain ECDSA operations
 	return crypto.Sign(hash, unlockedKey.PrivateKey)
 }
@@ -276,9 +279,28 @@ func (ks *KeyStore) SignTx(a accounts.Account, tx *types.Transaction, chainID *b
 	if !found {
 		return nil, ErrLocked
 	}
-	// Depending on the presence of the chain ID, sign with 2718 or homestead
+	return signTxWithKey(unlockedKey.Key, tx, chainID)
+}
+
+func signTxWithKey(key *Key, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
 	signer := types.LatestSignerForChainID(chainID)
-	return types.SignTx(tx, signer, unlockedKey.PrivateKey)
+	switch {
+	case key == nil:
+		return nil, ErrLocked
+	case key.isECDSA():
+		if key.PrivateKey == nil {
+			return nil, ErrLocked
+		}
+		return types.SignTx(tx, signer, key.PrivateKey)
+	case key.isMLDSA87():
+		privateKey, err := key.mldsa87PrivateKey()
+		if err != nil {
+			return nil, err
+		}
+		return types.SignTxMLDSA87(tx, signer, privateKey)
+	default:
+		return nil, accounts.ErrNotSupported
+	}
 }
 
 // SignHashWithPassphrase signs hash if the private key matching the given address
@@ -289,7 +311,10 @@ func (ks *KeyStore) SignHashWithPassphrase(a accounts.Account, passphrase string
 	if err != nil {
 		return nil, err
 	}
-	defer zeroKey(key.PrivateKey)
+	defer zeroKeyMaterial(key)
+	if !key.isECDSA() {
+		return nil, accounts.ErrNotSupported
+	}
 	return crypto.Sign(hash, key.PrivateKey)
 }
 
@@ -300,10 +325,8 @@ func (ks *KeyStore) SignTxWithPassphrase(a accounts.Account, passphrase string, 
 	if err != nil {
 		return nil, err
 	}
-	defer zeroKey(key.PrivateKey)
-	// Depending on the presence of the chain ID, sign with or without replay protection.
-	signer := types.LatestSignerForChainID(chainID)
-	return types.SignTx(tx, signer, key.PrivateKey)
+	defer zeroKeyMaterial(key)
+	return signTxWithKey(key, tx, chainID)
 }
 
 // Unlock unlocks the given account indefinitely.
@@ -343,7 +366,7 @@ func (ks *KeyStore) TimedUnlock(a accounts.Account, passphrase string, timeout t
 		if u.abort == nil {
 			// The address was unlocked indefinitely, so unlocking
 			// it with a timeout would be confusing.
-			zeroKey(key.PrivateKey)
+			zeroKeyMaterial(key)
 			return nil
 		}
 		// Terminate the expire goroutine and replace it below.
@@ -374,7 +397,11 @@ func (ks *KeyStore) getDecryptedKey(a accounts.Account, auth string) (accounts.A
 		return a, nil, err
 	}
 	key, err := ks.storage.GetKey(a.Address, a.URL.Path, auth)
-	return a, key, err
+	if err != nil {
+		return a, nil, err
+	}
+	a.Address = key.Address
+	return a, key, nil
 }
 
 func (ks *KeyStore) expire(addr common.Address, u *unlocked, timeout time.Duration) {
@@ -390,17 +417,23 @@ func (ks *KeyStore) expire(addr common.Address, u *unlocked, timeout time.Durati
 		// because the map stores a new pointer every time the key is
 		// unlocked.
 		if ks.unlocked[addr] == u {
-			zeroKey(u.PrivateKey)
+			zeroKeyMaterial(u.Key)
 			delete(ks.unlocked, addr)
 		}
 		ks.mu.Unlock()
 	}
 }
 
-// NewAccount generates a new key and stores it into the key directory,
+// NewAccount generates a new ECDSA key and stores it into the key directory,
 // encrypting it with the passphrase.
 func (ks *KeyStore) NewAccount(passphrase string) (accounts.Account, error) {
-	_, account, err := storeNewKey(ks.storage, crand.Reader, passphrase)
+	return ks.NewAccountWithType(passphrase, KeyTypeECDSA)
+}
+
+// NewAccountWithType generates a new key of the requested type and stores it into the key directory,
+// encrypting it with the passphrase.
+func (ks *KeyStore) NewAccountWithType(passphrase string, keyType string) (accounts.Account, error) {
+	_, account, err := storeNewKeyWithType(ks.storage, crand.Reader, passphrase, keyType)
 	if err != nil {
 		return accounts.Account{}, err
 	}
@@ -417,6 +450,7 @@ func (ks *KeyStore) Export(a accounts.Account, passphrase, newPassphrase string)
 	if err != nil {
 		return nil, err
 	}
+	defer zeroKeyMaterial(key)
 	var N, P int
 	if store, ok := ks.storage.(*keyStorePassphrase); ok {
 		N, P = store.scryptN, store.scryptP
@@ -429,8 +463,8 @@ func (ks *KeyStore) Export(a accounts.Account, passphrase, newPassphrase string)
 // Import stores the given encrypted JSON key into the key directory.
 func (ks *KeyStore) Import(keyJSON []byte, passphrase, newPassphrase string) (accounts.Account, error) {
 	key, err := DecryptKey(keyJSON, passphrase)
-	if key != nil && key.PrivateKey != nil {
-		defer zeroKey(key.PrivateKey)
+	if key != nil {
+		defer zeroKeyMaterial(key)
 	}
 	if err != nil {
 		return accounts.Account{}, err
@@ -476,13 +510,17 @@ func (ks *KeyStore) Update(a accounts.Account, passphrase, newPassphrase string)
 	if err != nil {
 		return err
 	}
+	defer zeroKeyMaterial(key)
 	return ks.storage.StoreKey(a.URL.Path, key, newPassphrase)
 }
 
 // ImportPreSaleKey decrypts the given wallet and stores
 // a key file in the key directory. The key file is encrypted with the same passphrase.
 func (ks *KeyStore) ImportKey(keyJSON []byte, passphrase string) (accounts.Account, error) {
-	a, _, err := importKey(ks.storage, keyJSON, passphrase)
+	a, key, err := importKey(ks.storage, keyJSON, passphrase)
+	if key != nil {
+		defer zeroKeyMaterial(key)
+	}
 	if err != nil {
 		return a, err
 	}
@@ -499,8 +537,27 @@ func (ks *KeyStore) isUpdating() bool {
 	return ks.updating
 }
 
-// zeroKey zeroes a private key in memory.
+func zeroKeyMaterial(key *Key) {
+	if key == nil {
+		return
+	}
+	if key.PrivateKey != nil {
+		zeroKey(key.PrivateKey)
+		key.PrivateKey = nil
+	}
+	if len(key.MLDSA87PrivateKey) != 0 {
+		for i := range key.MLDSA87PrivateKey {
+			key.MLDSA87PrivateKey[i] = 0
+		}
+		key.MLDSA87PrivateKey = nil
+	}
+}
+
+// zeroKey zeroes an ECDSA private key in memory.
 func zeroKey(k *ecdsa.PrivateKey) {
+	if k == nil || k.D == nil {
+		return
+	}
 	b := k.D.Bits()
 	for i := range b {
 		b[i] = 0

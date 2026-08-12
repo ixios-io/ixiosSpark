@@ -922,6 +922,7 @@ func (q *queue) deliver(id string, taskPool map[common.Hash]*types.Header,
 	if accepted > 0 {
 		return accepted, fmt.Errorf("partial failure: %v", failure)
 	}
+	log.Warn(fmt.Sprintf("%s: %v", failure.Error(), errStaleDelivery))
 	return accepted, fmt.Errorf("%w: %v", failure, errStaleDelivery)
 }
 

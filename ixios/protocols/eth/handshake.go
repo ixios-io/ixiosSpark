@@ -14,7 +14,9 @@
 package eth
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"time"
 
@@ -57,6 +59,14 @@ func (p *Peer) Handshake(network uint64, td *big.Int, head common.Hash, genesis 
 	for i := 0; i < 2; i++ {
 		select {
 		case err := <-errc:
+			if errors.Is(err, errNetworkIDMismatch) {
+				log.Trace("p2p handshake failed: "+err.Error(), "remoteAddr", p.RemoteAddr().String())
+				return err
+			}
+			if errors.Is(err, io.EOF) {
+				log.Debug("p2p handshake failed: "+err.Error(), "remoteAddr", p.RemoteAddr().String())
+				return err
+			}
 			if err != nil {
 				log.Error("p2p handshake failed: "+err.Error(), "remoteAddr", p.RemoteAddr().String())
 				return err
@@ -87,9 +97,11 @@ func (p *Peer) readStatus(network uint64, status *StatusPacket, genesis common.H
 	if err := msg.Decode(&status); err != nil {
 		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
 	}
+
 	if status.NetworkID != network {
 		return fmt.Errorf("%w: %d (!= %d)", errNetworkIDMismatch, status.NetworkID, network)
 	}
+
 	if uint(status.ProtocolVersion) != p.version {
 		return fmt.Errorf("%w: %d (!= %d)", errProtocolVersionMismatch, status.ProtocolVersion, p.version)
 	}

@@ -24,7 +24,6 @@ import (
 	"github.com/holiman/uint256"
 	"github.com/ixios-io/ixiosSpark/common"
 	"github.com/ixios-io/ixiosSpark/core/types"
-	"github.com/ixios-io/ixiosSpark/zeta"
 	"golang.org/x/exp/slices"
 )
 
@@ -393,6 +392,33 @@ func (l *list) Filter(costLimit *uint256.Int, gasLimit uint64) (types.Transactio
 	return removed, invalids
 }
 
+// FilterGasPrice removes all transactions from the list with a gas price below
+// the provided minimum. Every removed transaction is returned for any
+// post-removal maintenance. Strict-mode invalidated transactions are also
+// returned.
+func (l *list) FilterGasPrice(minimumGasPrice *big.Int) (types.Transactions, types.Transactions) {
+	removed := l.txs.Filter(func(tx *types.Transaction) bool {
+		return tx.GasPrice().Cmp(minimumGasPrice) < 0
+	})
+	if len(removed) == 0 {
+		return nil, nil
+	}
+	var invalids types.Transactions
+	if l.strict {
+		lowest := uint64(math.MaxUint64)
+		for _, tx := range removed {
+			if nonce := tx.Nonce(); lowest > nonce {
+				lowest = nonce
+			}
+		}
+		invalids = l.txs.filter(func(tx *types.Transaction) bool { return tx.Nonce() > lowest })
+	}
+	l.subTotalCost(removed)
+	l.subTotalCost(invalids)
+	l.txs.reheap()
+	return removed, invalids
+}
+
 // Cap places a hard limit on the number of items, returning all transactions
 // exceeding that limit.
 func (l *list) Cap(threshold int) types.Transactions {
@@ -574,12 +600,11 @@ func (l *pricedList) Removed(count int) {
 	l.Reheap()
 }
 
-// Underpriced checks whether a transaction has a gas price less than zeta
-func (l *pricedList) Underpriced(tx *types.Transaction, blockNumber *big.Int) bool {
-	zetaThreshold := zeta.CalculateZetaValue(blockNumber)
-
+// Underpriced checks whether a transaction is below the caller-provided gas
+// price threshold.
+func (l *pricedList) Underpriced(tx *types.Transaction, minimumGasPrice *big.Int) bool {
 	// If the transaction's gas price is less than the threshold, transaction is underpriced.
-	if tx.GasPrice().Cmp(zetaThreshold) < 0 {
+	if tx.GasPrice().Cmp(minimumGasPrice) < 0 {
 		return false
 	}
 	return true

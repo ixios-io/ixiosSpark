@@ -37,6 +37,11 @@ type DynamicFeeTx struct {
 	V *big.Int `json:"v" gencodec:"required"`
 	R *big.Int `json:"r" gencodec:"required"`
 	S *big.Int `json:"s" gencodec:"required"`
+
+	// Optional post-quantum transaction signature payload.
+	SignatureType      []byte `json:"signatureType,omitempty" rlp:"optional"`
+	SignaturePublicKey []byte `json:"signaturePublicKey,omitempty" rlp:"optional"`
+	Signature          []byte `json:"signature,omitempty" rlp:"optional"`
 }
 
 // copy creates a deep copy of the transaction data and initializes all fields.
@@ -47,14 +52,17 @@ func (tx *DynamicFeeTx) copy() TxData {
 		Data:  common.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are copied below.
-		AccessList: make(AccessList, len(tx.AccessList)),
-		Value:      new(big.Int),
-		ChainID:    new(big.Int),
-		GasTipCap:  new(big.Int),
-		GasFeeCap:  new(big.Int),
-		V:          new(big.Int),
-		R:          new(big.Int),
-		S:          new(big.Int),
+		AccessList:         make(AccessList, len(tx.AccessList)),
+		Value:              new(big.Int),
+		ChainID:            new(big.Int),
+		GasTipCap:          new(big.Int),
+		GasFeeCap:          new(big.Int),
+		V:                  new(big.Int),
+		R:                  new(big.Int),
+		S:                  new(big.Int),
+		SignatureType:      common.CopyBytes(tx.SignatureType),
+		SignaturePublicKey: common.CopyBytes(tx.SignaturePublicKey),
+		Signature:          common.CopyBytes(tx.Signature),
 	}
 	copy(cpy.AccessList, tx.AccessList)
 	if tx.Value != nil {
@@ -111,6 +119,24 @@ func (tx *DynamicFeeTx) rawSignatureValues() (v, r, s *big.Int) {
 
 func (tx *DynamicFeeTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.ChainID, tx.V, tx.R, tx.S = chainID, v, r, s
+}
+
+func (tx *DynamicFeeTx) signatureType() []byte {
+	return tx.SignatureType
+}
+
+func (tx *DynamicFeeTx) signaturePublicKey() []byte {
+	return tx.SignaturePublicKey
+}
+
+func (tx *DynamicFeeTx) signatureBytes() []byte {
+	return tx.Signature
+}
+
+func (tx *DynamicFeeTx) setSignaturePayload(sigType, publicKey, signature []byte) {
+	tx.SignatureType = common.CopyBytes(sigType)
+	tx.SignaturePublicKey = common.CopyBytes(publicKey)
+	tx.Signature = common.CopyBytes(signature)
 }
 
 func (tx *DynamicFeeTx) encode(b *bytes.Buffer) error {

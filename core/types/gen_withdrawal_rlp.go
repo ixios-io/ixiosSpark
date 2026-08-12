@@ -13,7 +13,7 @@ func (obj *Withdrawal) EncodeRLP(_w io.Writer) error {
 	_tmp0 := w.List()
 	w.WriteUint64(obj.Index)
 	w.WriteUint64(obj.Validator)
-	w.WriteBytes(obj.Address[:])
+	w.WriteBytes(obj.Address.CompactBytes())
 	w.WriteUint64(obj.Amount)
 	w.ListEnd(_tmp0)
 	return w.Flush()

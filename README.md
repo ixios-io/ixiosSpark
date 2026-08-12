@@ -1,5 +1,3 @@
-![Ixios](https://ixios.io/img/ixios-logo.svg)
-
 ##  IxiosSpark
 
 A reference implementation of a client for the **Ixios** protocol.
@@ -21,22 +19,13 @@ Learn more at https://ixios.io
 
 ## Building from source
 
-Building `ixiosSpark` requires Go v1.24.0.
+Building `ixiosSpark` requires Go v1.26
 
-A build script for Ubuntu 24.04 LTS and Ubuntu 24.10 has been provided which will automatically install all dependencies and build ixiosSpark.
+A build script for Ubuntu 26.04 LTS, 24.10 and Ubuntu 24.04 LTS has been provided which will automatically install all dependencies and build ixiosSpark.
 
 ```shell
 ./build.sh
 ```
-
-After building from source, ixiosSpark can be installed with:
-
-```shell
-sudo ./install.sh
-```
-
-For other operating systems, we suggest using a pre-compiled binary or docker. See `Quick Install` or `Docker Install`.
-
 
 -----
 
@@ -47,16 +36,16 @@ For other operating systems, we suggest using a pre-compiled binary or docker. S
 
 Minimum:
 
-* Fast CPU with 8 cores
-* 16GB RAM
-* High performance SSD with 2TB free storage space
+* Fast CPU with 2 cores
+* 4GB RAM
+* High performance SSD with 80 GB free storage space
 * 16 Mbps Internet service
 
 Recommended:
 
-* Fast CPU with 16+ cores
-* 32GB+ RAM
-* High-performance SSD or NVMe with at least 5TB of free space
+* Fast CPU with 8+ cores
+* 16GB+ RAM
+* High-performance SSD or NVMe with at least 500 GB of free space
 * 100+ Mbps Internet service
 
 ### Firewall Settings

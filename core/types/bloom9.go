@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/ixios-io/ixiosSpark/common"
 	"github.com/ixios-io/ixiosSpark/common/hexutil"
 	"github.com/ixios-io/ixiosSpark/crypto"
 )
@@ -103,7 +104,7 @@ func CreateBloom(receipts Receipts) Bloom {
 	var bin Bloom
 	for _, receipt := range receipts {
 		for _, log := range receipt.Logs {
-			bin.add(log.Address.Bytes(), buf)
+			bin.add(log.Address.CompactBytes(), buf)
 			for _, b := range log.Topics {
 				bin.add(b[:], buf)
 			}
@@ -117,7 +118,7 @@ func LogsBloom(logs []*Log) []byte {
 	buf := make([]byte, 6)
 	var bin Bloom
 	for _, log := range logs {
-		bin.add(log.Address.Bytes(), buf)
+		bin.add(log.Address.CompactBytes(), buf)
 		for _, b := range log.Topics {
 			bin.add(b[:], buf)
 		}
@@ -153,5 +154,15 @@ func bloomValues(data []byte, hashbuf []byte) (uint, byte, uint, byte, uint, byt
 
 // BloomLookup is a convenience-method to check presence in the bloom filter
 func BloomLookup(bin Bloom, topic bytesBacked) bool {
-	return bin.Test(topic.Bytes())
+	switch t := interface{}(topic).(type) {
+	case common.Address:
+		return bin.Test(t.CompactBytes())
+	case *common.Address:
+		if t == nil {
+			return false
+		}
+		return bin.Test(t.CompactBytes())
+	default:
+		return bin.Test(topic.Bytes())
+	}
 }

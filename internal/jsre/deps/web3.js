@@ -1162,7 +1162,8 @@ require = (function e(t, n, r) {
          */
         var formatOutputAddress = function (param) {
             var value = param.staticPart();
-            return value.slice(value.length - 64, value.length);
+            var length = value.length >= 96 ? 96 : 64;
+            return value.slice(value.length - length, value.length);
         };
 
         module.exports = {
@@ -1880,7 +1881,9 @@ require = (function e(t, n, r) {
         var sha3 = require('crypto-js/sha3');
 
         module.exports = function (value, options) {
-            if (options && options.encoding === 'hex') {
+            options = options || {};
+
+            if (options.encoding === 'hex') {
                 if (value.length > 2 && value.substr(0, 2) === '0x') {
                     value = value.substr(2);
                 }
@@ -1888,7 +1891,7 @@ require = (function e(t, n, r) {
             }
 
             return sha3(value, {
-                outputLength: 256
+                outputLength: options.outputLength || 256
             }).toString();
         };
 
@@ -2289,8 +2292,31 @@ require = (function e(t, n, r) {
          * @param {String} address the given HEX address
          * @return {Boolean}
          */
+        var isAcceptedAddressLength = function (length) {
+            return length === 40 || length === 64 || length === 96;
+        };
+
+        var stripAddressPrefix = function (address) {
+            return address.replace(/^0x/i, '');
+        };
+
+        var checksumOutputLength = function (address) {
+            return address.length > 64 ? 512 : 256;
+        };
+
+        /**
+         * Checks if the given string is strictly an address
+         *
+         * @method isStrictAddress
+         * @param {String} address the given HEX address
+         * @return {Boolean}
+         */
         var isStrictAddress = function (address) {
-            return /^0x[0-9a-f]{40}$/i.test(address);
+            if (typeof address !== 'string' || !/^0x/i.test(address)) {
+                return false;
+            }
+            address = stripAddressPrefix(address);
+            return isAcceptedAddressLength(address.length) && /^[0-9a-f]+$/i.test(address);
         };
 
         /**
@@ -2301,10 +2327,14 @@ require = (function e(t, n, r) {
          * @return {Boolean}
          */
         var isAddress = function (address) {
-            if (!/^(0x)?[0-9a-f]{64}$/i.test(address)) {
+            if (typeof address !== 'string') {
+                return false;
+            }
+            address = stripAddressPrefix(address);
+            if (!isAcceptedAddressLength(address.length) || !/^[0-9a-f]+$/i.test(address)) {
                 // check if it has the basic requirements of an address
                 return false;
-            } else if (/^(0x)?[0-9a-f]{64}$/.test(address) || /^(0x)?[0-9A-F]{64}$/.test(address)) {
+            } else if (/^[0-9a-f]+$/.test(address) || /^[0-9A-F]+$/.test(address)) {
                 // If it's all small caps or all caps, return true
                 return true;
             } else {
@@ -2322,10 +2352,15 @@ require = (function e(t, n, r) {
          */
         var isChecksumAddress = function (address) {
             // Check each case
-            address = address.replace('0x', '');
-            var addressHash = sha3(address.toLowerCase());
+            address = stripAddressPrefix(address);
+            if (!isAcceptedAddressLength(address.length) || !/^[0-9a-f]+$/i.test(address)) {
+                return false;
+            }
+            var addressHash = sha3(address.toLowerCase(), {
+                outputLength: checksumOutputLength(address)
+            });
 
-            for (var i = 0; i < 64; i++) {
+            for (var i = 0; i < address.length; i++) {
                 // the nth letter should be uppercase if the nth digit of casemap is 1
                 if ((parseInt(addressHash[i], 16) > 7 && address[i].toUpperCase() !== address[i]) || (parseInt(addressHash[i], 16) <= 7 && address[i].toLowerCase() !== address[i])) {
                     return false;
@@ -2345,8 +2380,10 @@ require = (function e(t, n, r) {
         var toChecksumAddress = function (address) {
             if (typeof address === 'undefined') return '';
 
-            address = address.toLowerCase().replace('0x', '');
-            var addressHash = sha3(address);
+            address = stripAddressPrefix(address).toLowerCase();
+            var addressHash = sha3(address, {
+                outputLength: checksumOutputLength(address)
+            });
             var checksumAddress = '0x';
 
             for (var i = 0; i < address.length; i++) {
@@ -2361,7 +2398,7 @@ require = (function e(t, n, r) {
         };
 
         /**
-         * Transforms given string to valid 20 bytes-length address with 0x prefix
+         * Transforms given string to a valid Ixios address with 0x prefix.
          *
          * @method toAddress
          * @param {String} address
@@ -2372,11 +2409,12 @@ require = (function e(t, n, r) {
                 return address;
             }
 
-            if (/^[0-9a-f]{64}$/.test(address)) {
+            address = stripAddressPrefix(address);
+            if (isAcceptedAddressLength(address.length) && /^[0-9a-f]+$/i.test(address)) {
                 return '0x' + address;
             }
 
-            return '0x' + padLeft(toHex(address).substr(2), 64);
+            return '0x' + padLeft(toHex(address).substr(2), 96);
         };
 
         /**
@@ -4029,24 +4067,28 @@ require = (function e(t, n, r) {
         var inputAddressFormatter = function (address) {
             var iban = new Iban(address);
 
-            if (address.startsWith("0x")) {
-                address = address.slice(2);
-            }
-
-            // Prepend zeros if the address length is less than 64 characters
-            if (address.length < 64) {
-                address = address.padStart(64, '0');
-            }
-
             if (iban.isValid() && iban.isDirect()) {
                 return '0x' + iban.address();
             } else if (utils.isStrictAddress(address)) {
                 return address;
             } else if (utils.isAddress(address)) {
-                return '0x' + address;
+                return address.indexOf('0x') === 0 || address.indexOf('0X') === 0 ? address : '0x' + address;
             }
 
-            address = address.toLowerCase()
+            if (address.startsWith("0x")) {
+                address = address.slice(2);
+            }
+
+            // Preserve legacy zero-padding for short hex inputs while also
+            // accepting native 20, 32 and 48 byte address encodings.
+            if (/^[0-9a-fA-F]+$/.test(address) && address.length < 64) {
+                address = address.padStart(64, '0');
+                if (utils.isAddress(address)) {
+                    return '0x' + address;
+                }
+            }
+
+            address = address.toLowerCase();
 
             if (iban.isValid() && iban.isDirect()) {
                 return '0x' + iban.address();

@@ -28,11 +28,11 @@ import (
 const pubKeyHexSize = 132 // e.g., "0x" + 130 hex chars => 132 ASCII bytes
 const mksDataSize = 2656
 const readChunkSize = pubKeyHexSize + mksDataSize // = 2,788
-const chunkSize = mksDataSize + common.AddressLength
+const chunkSize = mksDataSize + common.LegacyAddressLength
 
 type ValidatorMKS struct {
-	Address common.Address // 32 bytes: first 6 bytes are zero, last 26 bytes are keccak(...)
-	MKSData []byte         // 5,348 bytes
+	Address common.Address
+	MKSData []byte // 5,348 bytes
 }
 
 // validatorsDat is the raw binary data with all validators combined.
@@ -84,13 +84,8 @@ func parseEmbeddedValidators() ([]ValidatorMKS, error) {
 			return nil, fmt.Errorf("chunk %d public key is %d bytes, expected 65", i, len(pubKeyBytes))
 		}
 
-		// Derive the Ixios address
-		fullHash := crypto.Keccak256(pubKeyBytes[1:])
-		if len(fullHash) != 32 {
-			return nil, fmt.Errorf("chunk %d keccak result length mismatch", i)
-		}
-		var ixiosAddress common.Address // 32 bytes
-		copy(ixiosAddress[6:], fullHash[len(fullHash)-26:])
+		// Derive the Ixios address.
+		ixiosAddress := crypto.PubkeyBytesToAddressWithType(0x00, pubKeyBytes[1:])
 
 		// Derive the MKS data
 		mks := make([]byte, mksDataSize)

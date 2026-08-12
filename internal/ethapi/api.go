@@ -14,6 +14,7 @@
 package ethapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -43,6 +44,7 @@ import (
 	"github.com/ixios-io/ixiosSpark/rlp"
 	"github.com/ixios-io/ixiosSpark/rpc"
 	"github.com/ixios-io/ixiosSpark/trie"
+	"github.com/ixios-io/ixiosSpark/zeta"
 )
 
 // estimateGasErrorRatio is the amount of overestimation eth_estimateGas is
@@ -61,16 +63,11 @@ func NewIxiosAPI(b Backend) *IxiosAPI {
 	return &IxiosAPI{b}
 }
 
-// GasPrice returns a suggestion for a gas price for legacy transactions.
+// GasPrice returns the required gas price for the current block.
+// The price is deterministic: 1 zeta pre-Aegis, 100 zeta post-Aegis.
 func (s *IxiosAPI) GasPrice(ctx context.Context) (*hexutil.Big, error) {
-	tipcap, err := s.b.SuggestGasTipCap(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if head := s.b.CurrentHeader(); head.BaseFee != nil {
-		tipcap.Add(tipcap, head.BaseFee)
-	}
-	return (*hexutil.Big)(tipcap), err
+	head := s.b.CurrentHeader()
+	return (*hexutil.Big)(zeta.CalculateMinimumGasPrice(s.b.ChainConfig(), head.Number)), nil
 }
 
 // MaxPriorityFeePerGas returns a suggestion for a gas tip cap for dynamic fee transactions.
@@ -356,16 +353,21 @@ func (s *PersonalAccountAPI) DeriveAccount(url string, path string, pin *bool) (
 	return wallet.Derive(derivPath, *pin)
 }
 
-// NewAccount will create a new account and returns the address for the new account.
+// NewAccount will create a new ECDSA account and returns the address for the new account.
 func (s *PersonalAccountAPI) NewAccount(password string) (common.AddressEIP55, error) {
+	return s.NewAccountWithType(password, keystore.KeyTypeECDSA)
+}
+
+// NewAccountWithType will create a new account with the requested signature type and returns the new address.
+func (s *PersonalAccountAPI) NewAccountWithType(password string, signatureType string) (common.AddressEIP55, error) {
 	ks, err := fetchKeystore(s.am)
 	if err != nil {
 		return common.AddressEIP55{}, err
 	}
-	acc, err := ks.NewAccount(password)
+	acc, err := ks.NewAccountWithType(password, signatureType)
 	if err == nil {
 		addrEIP55 := common.AddressEIP55(acc.Address)
-		log.Info("Your new key was generated", "address", addrEIP55.String())
+		log.Info("Your new key was generated", "address", addrEIP55.String(), "signatureType", signatureType)
 		log.Warn("Please backup your key file!", "path", acc.URL.Path)
 		log.Warn("Please remember your password!")
 		return addrEIP55, nil
@@ -671,7 +673,7 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 	if len(keys) > 0 {
 		var storageTrie state.Trie
 		if storageRoot != types.EmptyRootHash && storageRoot != (common.Hash{}) {
-			id := trie.StorageTrieID(header.Root, crypto.Keccak256Hash(address.Bytes()), storageRoot)
+			id := trie.StorageTrieID(header.Root, crypto.Keccak256Hash(address.CompactBytes()), storageRoot)
 			st, err := trie.NewStateTrie(id, statedb.Database().TrieDB())
 			if err != nil {
 				return nil, err
@@ -708,7 +710,7 @@ func (s *BlockChainAPI) GetProof(ctx context.Context, address common.Address, st
 		return nil, err
 	}
 	var accountProof proofList
-	if err := tr.Prove(crypto.Keccak256(address.Bytes()), &accountProof); err != nil {
+	if err := tr.Prove(crypto.Keccak256(address.CompactBytes()), &accountProof); err != nil {
 		return nil, err
 	}
 	balance := statedb.GetBalance(address).ToBig()
@@ -1286,6 +1288,9 @@ type RPCTransaction struct {
 	R                   *hexutil.Big      `json:"r"`
 	S                   *hexutil.Big      `json:"s"`
 	YParity             *hexutil.Uint64   `json:"yParity,omitempty"`
+	SignatureType       *hexutil.Bytes    `json:"signatureType,omitempty"`
+	SignaturePublicKey  *hexutil.Bytes    `json:"signaturePublicKey,omitempty"`
+	Signature           *hexutil.Bytes    `json:"signature,omitempty"`
 }
 
 // newRPCTransaction returns a transaction that will serialize to the RPC
@@ -1294,6 +1299,7 @@ func newRPCTransaction(tx *types.Transaction, blockHash common.Hash, blockNumber
 	signer := types.MakeSigner(config, new(big.Int).SetUint64(blockNumber), blockTime)
 	from, _ := types.Sender(signer, tx)
 	v, r, s := tx.RawSignatureValues()
+	hasMLDSA87 := bytes.Equal(tx.SignatureType(), types.SigTypeMLDSA87)
 	result := &RPCTransaction{
 		Type:     hexutil.Uint64(tx.Type()),
 		From:     from,
@@ -1313,6 +1319,14 @@ func newRPCTransaction(tx *types.Transaction, blockHash common.Hash, blockNumber
 		result.BlockNumber = (*hexutil.Big)(new(big.Int).SetUint64(blockNumber))
 		result.TransactionIndex = (*hexutil.Uint64)(&index)
 	}
+	if hasMLDSA87 {
+		sigType := hexutil.Bytes(tx.SignatureType())
+		publicKey := hexutil.Bytes(tx.SignaturePublicKey())
+		signature := hexutil.Bytes(tx.SignatureBytes())
+		result.SignatureType = &sigType
+		result.SignaturePublicKey = &publicKey
+		result.Signature = &signature
+	}
 
 	switch tx.Type() {
 	case types.LegacyTxType:
@@ -1323,17 +1337,21 @@ func newRPCTransaction(tx *types.Transaction, blockHash common.Hash, blockNumber
 
 	case types.AccessListTxType:
 		al := tx.AccessList()
-		yparity := hexutil.Uint64(v.Sign())
 		result.Accesses = &al
 		result.ChainID = (*hexutil.Big)(tx.ChainId())
-		result.YParity = &yparity
+		if !hasMLDSA87 {
+			yparity := hexutil.Uint64(v.Sign())
+			result.YParity = &yparity
+		}
 
 	case types.DynamicFeeTxType:
 		al := tx.AccessList()
-		yparity := hexutil.Uint64(v.Sign())
 		result.Accesses = &al
 		result.ChainID = (*hexutil.Big)(tx.ChainId())
-		result.YParity = &yparity
+		if !hasMLDSA87 {
+			yparity := hexutil.Uint64(v.Sign())
+			result.YParity = &yparity
+		}
 		result.GasFeeCap = (*hexutil.Big)(tx.GasFeeCap())
 		result.GasTipCap = (*hexutil.Big)(tx.GasTipCap())
 		// if the transaction has been mined, compute the effective gas price
@@ -1346,10 +1364,12 @@ func newRPCTransaction(tx *types.Transaction, blockHash common.Hash, blockNumber
 
 	case types.BlobTxType:
 		al := tx.AccessList()
-		yparity := hexutil.Uint64(v.Sign())
 		result.Accesses = &al
 		result.ChainID = (*hexutil.Big)(tx.ChainId())
-		result.YParity = &yparity
+		if !hasMLDSA87 {
+			yparity := hexutil.Uint64(v.Sign())
+			result.YParity = &yparity
+		}
 		result.GasFeeCap = (*hexutil.Big)(tx.GasFeeCap())
 		result.GasTipCap = (*hexutil.Big)(tx.GasTipCap())
 		// if the transaction has been mined, compute the effective gas price

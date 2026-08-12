@@ -14,7 +14,6 @@
 package fastClique
 
 import (
-	"bytes"
 	"encoding/json"
 	"time"
 
@@ -48,8 +47,9 @@ type sigLRU = lru.Cache[common.Hash, common.Address]
 
 // Snapshot is the state of the authorization voting at a given point in time.
 type Snapshot struct {
-	config   *params.CliqueConfig // Consensus engine parameters to fine tune behavior
-	sigcache *sigLRU              // Cache of recent block signatures to speed up ecrecover
+	config      *params.CliqueConfig // Consensus engine parameters to fine tune behavior
+	chainConfig *params.ChainConfig  // Chain config (required for fork-gated features such as DVG)
+	sigcache    *sigLRU              // Cache of recent block signatures to speed up ecrecover
 
 	Number  uint64                      `json:"number"`  // Block number where the snapshot was created
 	Hash    common.Hash                 `json:"hash"`    // Block hash where the snapshot was created
@@ -62,15 +62,16 @@ type Snapshot struct {
 // newSnapshot creates a new snapshot with the specified startup parameters. This
 // method does not initialize the set of recent signers, so only ever use if for
 // the genesis block.
-func newSnapshot(config *params.CliqueConfig, sigcache *sigLRU, number uint64, hash common.Hash, signers []common.Address) *Snapshot {
+func newSnapshot(config *params.CliqueConfig, chainConfig *params.ChainConfig, sigcache *sigLRU, number uint64, hash common.Hash, signers []common.Address) *Snapshot {
 	snap := &Snapshot{
-		config:   config,
-		sigcache: sigcache,
-		Number:   number,
-		Hash:     hash,
-		Signers:  make(map[common.Address]struct{}),
-		Recents:  make(map[uint64]common.Address),
-		Tally:    make(map[common.Address]Tally),
+		config:      config,
+		chainConfig: chainConfig,
+		sigcache:    sigcache,
+		Number:      number,
+		Hash:        hash,
+		Signers:     make(map[common.Address]struct{}),
+		Recents:     make(map[uint64]common.Address),
+		Tally:       make(map[common.Address]Tally),
 	}
 	for _, signer := range signers {
 		snap.Signers[signer] = struct{}{}
@@ -79,7 +80,7 @@ func newSnapshot(config *params.CliqueConfig, sigcache *sigLRU, number uint64, h
 }
 
 // loadSnapshot loads an existing snapshot from the database.
-func loadSnapshot(config *params.CliqueConfig, sigcache *sigLRU, db kvdb.Database, hash common.Hash) (*Snapshot, error) {
+func loadSnapshot(config *params.CliqueConfig, chainConfig *params.ChainConfig, sigcache *sigLRU, db kvdb.Database, hash common.Hash) (*Snapshot, error) {
 	blob, err := db.Get(append(rawdb.CliqueSnapshotPrefix, hash[:]...))
 	if err != nil {
 		return nil, err
@@ -89,6 +90,7 @@ func loadSnapshot(config *params.CliqueConfig, sigcache *sigLRU, db kvdb.Databas
 		return nil, err
 	}
 	snap.config = config
+	snap.chainConfig = chainConfig
 	snap.sigcache = sigcache
 
 	return snap, nil
@@ -106,14 +108,15 @@ func (s *Snapshot) store(db kvdb.Database) error {
 // copy creates a deep copy of the snapshot, though not the individual votes.
 func (s *Snapshot) copy() *Snapshot {
 	cpy := &Snapshot{
-		config:   s.config,
-		sigcache: s.sigcache,
-		Number:   s.Number,
-		Hash:     s.Hash,
-		Signers:  make(map[common.Address]struct{}),
-		Recents:  make(map[uint64]common.Address),
-		Votes:    make([]*Vote, len(s.Votes)),
-		Tally:    make(map[common.Address]Tally),
+		config:      s.config,
+		chainConfig: s.chainConfig,
+		sigcache:    s.sigcache,
+		Number:      s.Number,
+		Hash:        s.Hash,
+		Signers:     make(map[common.Address]struct{}),
+		Recents:     make(map[uint64]common.Address),
+		Votes:       make([]*Vote, len(s.Votes)),
+		Tally:       make(map[common.Address]Tally),
 	}
 	for signer := range s.Signers {
 		cpy.Signers[signer] = struct{}{}
@@ -197,12 +200,8 @@ func (s *Snapshot) apply(headers []*types.Header) (*Snapshot, error) {
 		//logged = time.Now()
 	)
 	for _, header := range headers {
-		// Remove any votes on checkpoint blocks
 		number := header.Number.Uint64()
-		if number%s.config.Epoch == 0 {
-			snap.Votes = nil
-			snap.Tally = make(map[common.Address]Tally)
-		}
+
 		// Delete the oldest signer from the recent list to allow it signing again
 		if limit := uint64(len(snap.Signers)/2 + 1); number >= limit {
 			delete(snap.Recents, number-limit)
@@ -217,37 +216,62 @@ func (s *Snapshot) apply(headers []*types.Header) (*Snapshot, error) {
 		}
 		snap.Recents[number] = signer
 
-		// Header authorized, discard any previous votes from the signer
-		for i, vote := range snap.Votes {
-			if vote.Signer == signer && vote.Address == header.Coinbase {
-				// Uncast the vote from the cached tally
-				snap.uncast(vote.Address, vote.Authorize)
+		// DVG: Parse vote from extra-data
+		// Non-checkpoint layout: [32 vanity][optional: 1 auth + 48 addr][65 seal]
+		// If the middle region is exactly voteDataSize bytes, it contains a vote.
+		// Old blocks and no-vote blocks have 0 bytes in the middle; no vote recorded.
+		// DVG voting is only active after AegisBlock
+		if s.chainConfig.IsAddressFormat(header.Number) {
+			extraMiddle := len(header.Extra) - extraVanity - extraSeal
+			if extraMiddle == voteDataSize {
+				voteRegion := header.Extra[extraVanity : extraVanity+voteDataSize]
+				authorize := voteRegion[0] == 0x01
+				target := common.BytesToAddress(voteRegion[1:])
 
-				// Uncast the vote from the chronological list
-				snap.Votes = append(snap.Votes[:i], snap.Votes[i+1:]...)
-				break // only one vote allowed
+				// Discard any previous vote from this signer for this target
+				for i, vote := range snap.Votes {
+					if vote.Signer == signer && vote.Address == target {
+						snap.uncast(vote.Address, vote.Authorize)
+						snap.Votes = append(snap.Votes[:i], snap.Votes[i+1:]...)
+						break
+					}
+				}
+				// Cast the new vote
+				if snap.cast(target, authorize) {
+					snap.Votes = append(snap.Votes, &Vote{
+						Signer:    signer,
+						Block:     number,
+						Address:   target,
+						Authorize: authorize,
+					})
+				}
 			}
 		}
-		// Tally up the new vote from the signer
-		var authorize bool
-		switch {
-		case bytes.Equal(header.Nonce[:], nonceAuthVote):
-			authorize = true
-		case bytes.Equal(header.Nonce[:], nonceDropVote):
-			authorize = false
-		default:
-			return nil, errInvalidVote
+
+		// DVG: At epoch boundary, enact any proposals that achieved majority, then reset
+		// Enactment is only active after AegisBlock; the vote/tally reset is unconditional.
+		if number%s.config.Epoch == 0 {
+			if s.chainConfig.IsAddressFormat(header.Number) {
+				for address, tally := range snap.Tally {
+					if tally.Votes > len(snap.Signers)/2 {
+						if tally.Authorize {
+							snap.Signers[address] = struct{}{}
+							log.Info("Validator added by DVG vote", "address", address, "epoch", number)
+						} else {
+							delete(snap.Signers, address)
+							for blk, recent := range snap.Recents {
+								if recent == address {
+									delete(snap.Recents, blk)
+								}
+							}
+							log.Info("Validator removed by DVG vote", "address", address, "epoch", number)
+						}
+					}
+				}
+			}
+			snap.Votes = nil
+			snap.Tally = make(map[common.Address]Tally)
 		}
-		if snap.cast(header.Coinbase, authorize) {
-			snap.Votes = append(snap.Votes, &Vote{
-				Signer:    signer,
-				Block:     number,
-				Address:   header.Coinbase,
-				Authorize: authorize,
-			})
-		}
-		// If the vote passed, update the list of signers
-		// todo: implement MKS
 	}
 
 	if time.Since(start) > 8*time.Second {

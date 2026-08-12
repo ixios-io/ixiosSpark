@@ -11,7 +11,7 @@ import (
 func (obj *Log) EncodeRLP(_w io.Writer) error {
 	w := rlp.NewEncoderBuffer(_w)
 	_tmp0 := w.List()
-	w.WriteBytes(obj.Address[:])
+	w.WriteBytes(obj.Address.CompactBytes())
 	_tmp1 := w.List()
 	for _, _tmp2 := range obj.Topics {
 		w.WriteBytes(_tmp2[:])

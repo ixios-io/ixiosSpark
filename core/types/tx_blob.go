@@ -47,6 +47,11 @@ type BlobTx struct {
 	V *uint256.Int `json:"v" gencodec:"required"`
 	R *uint256.Int `json:"r" gencodec:"required"`
 	S *uint256.Int `json:"s" gencodec:"required"`
+
+	// Optional post-quantum transaction signature payload.
+	SignatureType      []byte `json:"signatureType,omitempty" rlp:"optional"`
+	SignaturePublicKey []byte `json:"signaturePublicKey,omitempty" rlp:"optional"`
+	Signature          []byte `json:"signature,omitempty" rlp:"optional"`
 }
 
 // BlobTxSidecar contains the blobs of a blob transaction.
@@ -98,16 +103,19 @@ func (tx *BlobTx) copy() TxData {
 		Data:  common.CopyBytes(tx.Data),
 		Gas:   tx.Gas,
 		// These are copied below.
-		AccessList: make(AccessList, len(tx.AccessList)),
-		BlobHashes: make([]common.Hash, len(tx.BlobHashes)),
-		Value:      new(uint256.Int),
-		ChainID:    new(uint256.Int),
-		GasTipCap:  new(uint256.Int),
-		GasFeeCap:  new(uint256.Int),
-		BlobFeeCap: new(uint256.Int),
-		V:          new(uint256.Int),
-		R:          new(uint256.Int),
-		S:          new(uint256.Int),
+		AccessList:         make(AccessList, len(tx.AccessList)),
+		BlobHashes:         make([]common.Hash, len(tx.BlobHashes)),
+		Value:              new(uint256.Int),
+		ChainID:            new(uint256.Int),
+		GasTipCap:          new(uint256.Int),
+		GasFeeCap:          new(uint256.Int),
+		BlobFeeCap:         new(uint256.Int),
+		V:                  new(uint256.Int),
+		R:                  new(uint256.Int),
+		S:                  new(uint256.Int),
+		SignatureType:      common.CopyBytes(tx.SignatureType),
+		SignaturePublicKey: common.CopyBytes(tx.SignaturePublicKey),
+		Signature:          common.CopyBytes(tx.Signature),
 	}
 	copy(cpy.AccessList, tx.AccessList)
 	copy(cpy.BlobHashes, tx.BlobHashes)
@@ -180,6 +188,24 @@ func (tx *BlobTx) setSignatureValues(chainID, v, r, s *big.Int) {
 	tx.V.SetFromBig(v)
 	tx.R.SetFromBig(r)
 	tx.S.SetFromBig(s)
+}
+
+func (tx *BlobTx) signatureType() []byte {
+	return tx.SignatureType
+}
+
+func (tx *BlobTx) signaturePublicKey() []byte {
+	return tx.SignaturePublicKey
+}
+
+func (tx *BlobTx) signatureBytes() []byte {
+	return tx.Signature
+}
+
+func (tx *BlobTx) setSignaturePayload(sigType, publicKey, signature []byte) {
+	tx.SignatureType = common.CopyBytes(sigType)
+	tx.SignaturePublicKey = common.CopyBytes(publicKey)
+	tx.Signature = common.CopyBytes(signature)
 }
 
 func (tx *BlobTx) withoutSidecar() *BlobTx {

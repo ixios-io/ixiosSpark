@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 	"github.com/ixios-io/ixiosSpark/common"
 	"github.com/ixios-io/ixiosSpark/crypto"
+	"github.com/ixios-io/ixiosSpark/log"
 	"github.com/ixios-io/ixiosSpark/params"
 )
 
@@ -189,13 +191,16 @@ func (s cancunSigner) Sender(tx *Transaction) (common.Address, error) {
 	if tx.Type() != BlobTxType {
 		return s.londonSigner.Sender(tx)
 	}
+	if tx.ChainId().Cmp(s.chainId) != 0 {
+		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
+	}
+	if hasMLDSA87SignaturePayload(tx) {
+		return recoverMLDSA87(s.Hash(tx), tx)
+	}
 	V, R, S := tx.RawSignatureValues()
 	// Blob txs are defined to use 0 and 1 as their recovery
 	// id, add 27 to become equivalent to unprotected Homestead signatures.
 	V = new(big.Int).Add(V, big.NewInt(27))
-	if tx.ChainId().Cmp(s.chainId) != 0 {
-		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
-	}
 	return recoverPlain(s.Hash(tx), R, S, V, true)
 }
 
@@ -213,6 +218,9 @@ func (s cancunSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 	// because it indicates that the chain ID was not specified in the tx.
 	if txdata.ChainID.Sign() != 0 && txdata.ChainID.ToBig().Cmp(s.chainId) != 0 {
 		return nil, nil, nil, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, txdata.ChainID, s.chainId)
+	}
+	if isMLDSA87SignatureEnvelope(sig) {
+		return big.NewInt(0), big.NewInt(0), big.NewInt(0), nil
 	}
 	R, S, _ = decodeSignature(sig)
 	V = big.NewInt(int64(sig[64]))
@@ -257,13 +265,16 @@ func (s londonSigner) Sender(tx *Transaction) (common.Address, error) {
 	if tx.Type() != DynamicFeeTxType {
 		return s.eip2930Signer.Sender(tx)
 	}
+	if tx.ChainId().Cmp(s.chainId) != 0 {
+		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
+	}
+	if hasMLDSA87SignaturePayload(tx) {
+		return recoverMLDSA87(s.Hash(tx), tx)
+	}
 	V, R, S := tx.RawSignatureValues()
 	// DynamicFee txs are defined to use 0 and 1 as their recovery
 	// id, add 27 to become equivalent to unprotected Homestead signatures.
 	V = new(big.Int).Add(V, big.NewInt(27))
-	if tx.ChainId().Cmp(s.chainId) != 0 {
-		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
-	}
 	return recoverPlain(s.Hash(tx), R, S, V, true)
 }
 
@@ -281,6 +292,9 @@ func (s londonSigner) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big
 	// because it indicates that the chain ID was not specified in the tx.
 	if txdata.ChainID.Sign() != 0 && txdata.ChainID.Cmp(s.chainId) != 0 {
 		return nil, nil, nil, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, txdata.ChainID, s.chainId)
+	}
+	if isMLDSA87SignatureEnvelope(sig) {
+		return big.NewInt(0), big.NewInt(0), big.NewInt(0), nil
 	}
 	R, S, _ = decodeSignature(sig)
 	V = big.NewInt(int64(sig[64]))
@@ -331,14 +345,17 @@ func (s eip2930Signer) Sender(tx *Transaction) (common.Address, error) {
 	case LegacyTxType:
 		return s.EIP155Signer.Sender(tx)
 	case AccessListTxType:
+		if tx.ChainId().Cmp(s.chainId) != 0 {
+			return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
+		}
+		if hasMLDSA87SignaturePayload(tx) {
+			return recoverMLDSA87(s.Hash(tx), tx)
+		}
 		// AL txs are defined to use 0 and 1 as their recovery
 		// id, add 27 to become equivalent to unprotected Homestead signatures.
 		V = new(big.Int).Add(V, big.NewInt(27))
 	default:
 		return common.Address{}, ErrTxTypeNotSupported
-	}
-	if tx.ChainId().Cmp(s.chainId) != 0 {
-		return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
 	}
 	return recoverPlain(s.Hash(tx), R, S, V, true)
 }
@@ -352,6 +369,9 @@ func (s eip2930Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *bi
 		// because it indicates that the chain ID was not specified in the tx.
 		if txdata.ChainID.Sign() != 0 && txdata.ChainID.Cmp(s.chainId) != 0 {
 			return nil, nil, nil, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, txdata.ChainID, s.chainId)
+		}
+		if isMLDSA87SignatureEnvelope(sig) {
+			return big.NewInt(0), big.NewInt(0), big.NewInt(0), nil
 		}
 		R, S, _ = decodeSignature(sig)
 		V = big.NewInt(int64(sig[64]))
@@ -420,6 +440,15 @@ func (s EIP155Signer) Sender(tx *Transaction) (common.Address, error) {
 	if tx.Type() != LegacyTxType {
 		return common.Address{}, ErrTxTypeNotSupported
 	}
+	if hasMLDSA87SignaturePayload(tx) {
+		if !tx.Protected() {
+			return common.Address{}, ErrMLDSA87RequiresProtectedOrTypedTx
+		}
+		if tx.ChainId().Cmp(s.chainId) != 0 {
+			return common.Address{}, fmt.Errorf("%w: have %d want %d", ErrInvalidChainId, tx.ChainId(), s.chainId)
+		}
+		return recoverMLDSA87(s.Hash(tx), tx)
+	}
 	if !tx.Protected() {
 		return HomesteadSigner{}.Sender(tx)
 	}
@@ -437,6 +466,10 @@ func (s EIP155Signer) Sender(tx *Transaction) (common.Address, error) {
 func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
 	if tx.Type() != LegacyTxType {
 		return nil, nil, nil, ErrTxTypeNotSupported
+	}
+	if isMLDSA87SignatureEnvelope(sig) {
+		V = new(big.Int).Add(new(big.Int).Set(s.chainIdMul), big.NewInt(35))
+		return big.NewInt(0), big.NewInt(0), V, nil
 	}
 	R, S, V = decodeSignature(sig)
 	if s.chainId.Sign() != 0 {
@@ -476,12 +509,18 @@ func (s HomesteadSigner) Equal(s2 Signer) bool {
 // SignatureValues returns signature values. This signature
 // needs to be in the [R || S || V] format where V is 0 or 1.
 func (hs HomesteadSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *big.Int, err error) {
+	if isMLDSA87SignatureEnvelope(sig) {
+		return nil, nil, nil, ErrMLDSA87RequiresProtectedOrTypedTx
+	}
 	return hs.FrontierSigner.SignatureValues(tx, sig)
 }
 
 func (hs HomesteadSigner) Sender(tx *Transaction) (common.Address, error) {
 	if tx.Type() != LegacyTxType {
 		return common.Address{}, ErrTxTypeNotSupported
+	}
+	if hasMLDSA87SignaturePayload(tx) {
+		return common.Address{}, ErrMLDSA87RequiresProtectedOrTypedTx
 	}
 	v, r, s := tx.RawSignatureValues()
 	return recoverPlain(hs.Hash(tx), r, s, v, true)
@@ -504,6 +543,9 @@ func (fs FrontierSigner) Sender(tx *Transaction) (common.Address, error) {
 	if tx.Type() != LegacyTxType {
 		return common.Address{}, ErrTxTypeNotSupported
 	}
+	if hasMLDSA87SignaturePayload(tx) {
+		return common.Address{}, ErrMLDSA87RequiresProtectedOrTypedTx
+	}
 	v, r, s := tx.RawSignatureValues()
 	return recoverPlain(fs.Hash(tx), r, s, v, false)
 }
@@ -513,6 +555,9 @@ func (fs FrontierSigner) Sender(tx *Transaction) (common.Address, error) {
 func (fs FrontierSigner) SignatureValues(tx *Transaction, sig []byte) (r, s, v *big.Int, err error) {
 	if tx.Type() != LegacyTxType {
 		return nil, nil, nil, ErrTxTypeNotSupported
+	}
+	if isMLDSA87SignatureEnvelope(sig) {
+		return nil, nil, nil, ErrMLDSA87RequiresProtectedOrTypedTx
 	}
 	r, s, v = decodeSignature(sig)
 	return r, s, v, nil
@@ -533,7 +578,10 @@ func (fs FrontierSigner) Hash(tx *Transaction) common.Hash {
 
 func decodeSignature(sig []byte) (r, s, v *big.Int) {
 	if len(sig) != crypto.SignatureLength {
-		panic(fmt.Sprintf("wrong size for signature: got %d, want %d", len(sig), crypto.SignatureLength))
+		//panic(fmt.Sprintf("wrong size for signature: got %d, want %d", len(sig), crypto.SignatureLength))
+		// Return empty (invalid) signature instead of a panic to prevent malformed signatures from crashing the node
+		log.Warn("Invalid signature encountered: invalid signature length", "len", len(sig))
+		return new(big.Int), new(big.Int), new(big.Int)
 	}
 	r = new(big.Int).SetBytes(sig[:32])
 	s = new(big.Int).SetBytes(sig[32:64])
@@ -563,12 +611,24 @@ func recoverPlain(sighash common.Hash, R, S, Vb *big.Int, homestead bool) (commo
 	if len(pub) == 0 || pub[0] != 4 {
 		return common.Address{}, errors.New("invalid public key")
 	}
+	return crypto.PubkeyBytesToAddressWithType(SigTypeECDSA[0], pub[1:]), nil
+}
 
-	// Create a 32-byte address with leading zeros
-	var addr common.Address
-	hash := crypto.Keccak256(pub[1:])
-	copy(addr[6:], hash[6:]) // Copy 26 bytes, leaving first 6 bytes as zeros
-	return addr, nil
+func recoverMLDSA87(sighash common.Hash, tx *Transaction) (common.Address, error) {
+	if err := validateSignaturePayload(tx.inner); err != nil {
+		return common.Address{}, err
+	}
+	publicKeyBytes := signaturePublicKeyField(tx.inner)
+	signatureBytes := signatureBytesField(tx.inner)
+
+	var publicKey mldsa87.PublicKey
+	if err := publicKey.UnmarshalBinary(publicKeyBytes); err != nil {
+		return common.Address{}, err
+	}
+	if !mldsa87.Verify(&publicKey, sighash[:], nil, signatureBytes) {
+		return common.Address{}, ErrInvalidSig
+	}
+	return crypto.MLDSA87PubkeyToAddress(publicKeyBytes), nil
 }
 
 // deriveChainId derives the chain id from the given v parameter

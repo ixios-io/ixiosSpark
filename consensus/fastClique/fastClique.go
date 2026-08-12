@@ -1,4 +1,4 @@
-// IxiosSpark is free software: you can redistribute it and/or modify
+//IxiosSpark is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published by
 // the Free Software Foundation, either version 3 of the License, or
 // (at your option) any later version.
@@ -43,13 +43,14 @@ import (
 
 // FastClique Protocol constants.
 const (
-	checkpointInterval = 2048                   // Number of blocks after which to save the vote snapshot to the database
-	inmemorySnapshots  = 128                    // Number of recent vote snapshots to keep in memory
-	inmemorySignatures = 4096                   // Number of recent block signatures to keep in memory
-	extraMKS           = 2656                   // Reserve 2690 bytes for Multi-Key-Signature (MKS)
-	extraVanity        = 32                     // Fixed number of extra-data prefix bytes reserved for signer vanity
-	extraSeal          = crypto.SignatureLength // Fixed number of extra-data suffix bytes reserved for signer seal
-	maxBlocksOOT       = 3                      // Maximum number of blocks a validator can sign out-of-turn
+	checkpointInterval = 2048                     // Number of blocks after which to save the vote snapshot to the database
+	inmemorySnapshots  = 128                      // Number of recent vote snapshots to keep in memory
+	inmemorySignatures = 4096                     // Number of recent block signatures to keep in memory
+	extraMKS           = 2656                     // Legacy MKS reservation in genesis checkpoint extra-data
+	extraVanity        = 32                       // Fixed number of extra-data prefix bytes reserved for signer vanity
+	extraSeal          = crypto.SignatureLength   // Fixed number of extra-data suffix bytes reserved for signer seal
+	voteDataSize       = 1 + common.AddressLength // 1 auth byte + 48-byte address encoded in extra-data for DVG votes
+	maxBlocksOOT       = 3                        // Maximum number of blocks a validator can sign out-of-turn
 	ootWaitMinimum     = 3500
 	ootWaitLowerBound  = 6000
 	ootWaitUpperBound  = 8500
@@ -163,14 +164,7 @@ func ecrecover(header *types.Header, sigcache *sigLRU) (common.Address, error) {
 		return common.Address{}, err
 	}
 
-	var signer common.Address
-	fullHash := crypto.Keccak256(pubkey[1:])
-	copy(signer[:], fullHash)
-
-	// Zero out first 6 bytes of the signer address
-	for i := 0; i < 6; i++ {
-		signer[i] = 0
-	}
+	signer := crypto.PubkeyBytesToAddressWithType(types.SigTypeECDSA[0], pubkey[1:])
 
 	log.Trace("Clique ecrecover details",
 		"block", header.Number,
@@ -288,11 +282,12 @@ func (c *Clique) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 		return errMissingSignature
 	}
 	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
+	// Non-checkpoint blocks may contain DVG vote data (voteDataSize bytes) or nothing.
 	signersBytes := len(header.Extra) - extraVanity - extraSeal
-	if !checkpoint && signersBytes != 0 {
+	if !checkpoint && signersBytes != 0 && signersBytes != voteDataSize {
 		return errExtraSigners
 	}
-	if checkpoint && signersBytes%common.AddressLength != 0 {
+	if checkpoint && signersBytes%common.LegacyAddressLength != 0 {
 		return errInvalidCheckpointSigners
 	}
 	// Ensure that the mix digest is zero as we don't have fork protection currently
@@ -407,7 +402,7 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 		}
 		// If an on-disk checkpoint snapshot can be found, use that
 		if number%checkpointInterval == 0 {
-			if s, err := loadSnapshot(c.config, c.signatures, c.db, hash); err == nil {
+			if s, err := loadSnapshot(c.config, chain.Config(), c.signatures, c.db, hash); err == nil {
 				log.Trace("Loaded voting snapshot from disk", "number", number, "hash", hash)
 				snap = s
 				break
@@ -422,17 +417,27 @@ func (c *Clique) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 			if checkpoint != nil {
 				hash := checkpoint.Hash()
 
-				// MKS Implementation
-				// Extract signers from the genesis or checkpoint block's extra data
-				// Each signer entry consists of the address (32 bytes) followed by MKS data (2690 bytes)
-				signerEntrySize := common.AddressLength + extraMKS
-				signers := make([]common.Address, (len(checkpoint.Extra)-extraVanity-extraSeal)/signerEntrySize)
-				for i := 0; i < len(signers); i++ {
-					// Extract only the address part, skipping the MKS data for each signer
-					startPos := extraVanity + (i * signerEntrySize)
-					copy(signers[i][:], checkpoint.Extra[startPos:startPos+common.AddressLength])
+				payload := checkpoint.Extra[extraVanity : len(checkpoint.Extra)-extraSeal]
+
+				var signers []common.Address
+				switch {
+				case len(payload) == 0:
+					signers = nil
+				case len(payload)%(common.LegacyAddressLength+extraMKS) == 0:
+					signerEntrySize := common.LegacyAddressLength + extraMKS
+					signers = make([]common.Address, 0, len(payload)/signerEntrySize)
+					for i := 0; i < len(payload); i += signerEntrySize {
+						signers = append(signers, common.BytesToAddress(payload[i:i+common.LegacyAddressLength]))
+					}
+				case len(payload)%common.LegacyAddressLength == 0:
+					signers = make([]common.Address, 0, len(payload)/common.LegacyAddressLength)
+					for i := 0; i < len(payload); i += common.LegacyAddressLength {
+						signers = append(signers, common.BytesToAddress(payload[i:i+common.LegacyAddressLength]))
+					}
+				default:
+					return nil, errInvalidCheckpointSigners
 				}
-				snap = newSnapshot(c.config, c.signatures, number, hash, signers)
+				snap = newSnapshot(c.config, chain.Config(), c.signatures, number, hash, signers)
 				if err := snap.store(c.db); err != nil {
 					return nil, err
 				}
@@ -511,22 +516,21 @@ func (c *Clique) verifySeal(snap *Snapshot, header *types.Header, parents []*typ
 	// Check authorized signers
 	authorized := false
 	for authSigner := range snap.Signers {
-		// Check for zero prefix in authorized signer
-		hasZeroPrefix := true
-		zeroPrefix := make([]byte, 12) // Creates 12 zero bytes
-		if !bytes.Equal(authSigner[:12], zeroPrefix) {
-			hasZeroPrefix = false
-		}
+		hasLegacyAlias := authSigner.IsLegacyAirdropECDSA()
+		last20Equal := bytes.Equal(
+			signer[common.LegacyECDSAAirdropCanonicalZeroPrefixLength:],
+			authSigner[common.LegacyECDSAAirdropCanonicalZeroPrefixLength:],
+		)
 
 		log.Trace("Clique checking signer",
 			"block", number,
 			"auth_signer", authSigner,
-			"has_zero_prefix", hasZeroPrefix,
-			"last_20_equal", bytes.Equal(signer[12:], authSigner[12:]),
+			"has_zero_prefix", hasLegacyAlias,
+			"last_20_equal", last20Equal,
 			"full_equal", signer == authSigner)
 
-		// For zero-prefixed authorized signers, compare only the last 20 bytes
-		if hasZeroPrefix && bytes.Equal(signer[12:], authSigner[12:]) {
+		// For legacy 20-byte aliases, compare only the last 20 bytes
+		if hasLegacyAlias && last20Equal {
 			log.Trace("Clique authorized via last 20 bytes",
 				"block", number,
 				"signer", signer,
@@ -535,8 +539,8 @@ func (c *Clique) verifySeal(snap *Snapshot, header *types.Header, parents []*typ
 			break
 		}
 
-		// For full 32-byte authorized signers, compare everything
-		if !hasZeroPrefix && signer == authSigner {
+		// For full addresses, compare everything
+		if !hasLegacyAlias && signer == authSigner {
 			log.Debug("Clique authorized via full match",
 				"block", number,
 				"signer", signer)
@@ -618,6 +622,25 @@ func countRecentBlocksByValidator(snap *Snapshot, currentBlock uint64) map[commo
 	return recentBlocks
 }
 
+func getOutOfTurnWindowSize(numValidators int) uint64 {
+	return uint64(numValidators * maxBlocksOOT)
+}
+
+// Helper to count recent OOT blocks signed by each validator
+func countRecentOOTBlocksByValidator(snap *Snapshot, currentBlock uint64) map[common.Address][]uint64 {
+	recentBlocks := make(map[common.Address][]uint64)
+	for signer := range snap.Signers {
+		recentBlocks[signer] = make([]uint64, 0)
+	}
+	windowSize := getOutOfTurnWindowSize(len(snap.Signers))
+	for blockNum, signer := range snap.Recents {
+		if currentBlock-blockNum <= windowSize && !snap.inturn(blockNum, signer) {
+			recentBlocks[signer] = append(recentBlocks[signer], blockNum)
+		}
+	}
+	return recentBlocks
+}
+
 // Seal tries to create a sealed block using the local signing credentials, incorporating
 // randomized out-of-turn ootWait times and conditional waiting to reduce ommers and maintain
 // near 1-second block times even with large validator sets.
@@ -642,6 +665,7 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 	}
 
 	// Authorization check
+
 	if _, authorized := snap.Signers[signer]; !authorized {
 		log.Error("Failed to seal block: Signer not authorized",
 			"signer", signer,
@@ -650,7 +674,7 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 	}
 
 	// Get block signing history
-	recentBlocks := countRecentBlocksByValidator(snap, number)
+	recentBlocks := countRecentOOTBlocksByValidator(snap, number)
 
 	// Determine if we're in turn
 	inTurn := snap.inturn(number, signer)
@@ -731,10 +755,12 @@ func (c *Clique) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 			return
 		}
 
-		newRecentBlocks := countRecentBlocksByValidator(newSnap, number)
-		if (len(newRecentBlocks[signer]) + 1) >= maxBlocksOOT {
-			log.Debug("Not sealing OOT, max out of turn blocks reached.")
-			return
+		if !inTurn {
+			newRecentBlocks := countRecentOOTBlocksByValidator(newSnap, number)
+			if (len(newRecentBlocks[signer]) + 1) >= maxBlocksOOT {
+				log.Debug("Not sealing OOT, max out of turn blocks reached.")
+				return
+			}
 		}
 
 		// Sign the block
@@ -784,9 +810,9 @@ func (c *Clique) EstimateReward(chain consensus.ChainHeaderReader, block *types.
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
 func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header) error {
-	// Set coinbase to the local node's validator address (c.signer).
+	// Coinbase is always the validator's own address for fee collection.
+	// Votes are encoded in extra-data, not in Coinbase/Nonce.
 	header.Coinbase = c.signer
-
 	header.Nonce = types.BlockNonce{}
 
 	number := header.Number.Uint64()
@@ -794,7 +820,12 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	if err != nil {
 		return err
 	}
+
+	// Determine if we have a valid DVG proposal to encode this block
 	c.lock.RLock()
+	var voteTarget common.Address
+	var hasVote bool
+	var voteAuth bool
 	if number%c.config.Epoch != 0 {
 		addresses := make([]common.Address, 0, len(c.proposals))
 		for address, authorize := range c.proposals {
@@ -803,12 +834,9 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 			}
 		}
 		if len(addresses) > 0 {
-			header.Coinbase = addresses[rand.Intn(len(addresses))]
-			if c.proposals[header.Coinbase] {
-				copy(header.Nonce[:], nonceAuthVote)
-			} else {
-				copy(header.Nonce[:], nonceDropVote)
-			}
+			voteTarget = addresses[rand.Intn(len(addresses))]
+			voteAuth = c.proposals[voteTarget]
+			hasVote = true
 		}
 	}
 	signer := c.signer
@@ -816,15 +844,25 @@ func (c *Clique) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 
 	header.Difficulty = calcDifficulty(snap, signer)
 
-	// Ensure the extra-data has the right layout
+	// Build extra-data: [32 vanity][vote or signer list][65 seal]
 	if len(header.Extra) < extraVanity {
 		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-len(header.Extra))...)
 	}
 	header.Extra = header.Extra[:extraVanity]
 	if number%c.config.Epoch == 0 {
+		// Checkpoint block: encode the current signer list
 		for _, s := range snap.signers() {
-			header.Extra = append(header.Extra, s[:]...)
+			header.Extra = append(header.Extra, s.CompactBytes()...)
 		}
+	} else if hasVote {
+		// Non-checkpoint block with active DVG vote: encode into extra-data
+		// Layout: [1 byte auth flag][48 byte target address]
+		if voteAuth {
+			header.Extra = append(header.Extra, 0x01)
+		} else {
+			header.Extra = append(header.Extra, 0x00)
+		}
+		header.Extra = append(header.Extra, voteTarget.Bytes()...)
 	}
 	header.Extra = append(header.Extra, make([]byte, extraSeal)...)
 

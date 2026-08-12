@@ -148,7 +148,7 @@ func updateAccount(ctx *context, loader TrieLoader, addr common.Address) error {
 	h := newHasher()
 	defer h.release()
 
-	addrHash := h.hash(addr.Bytes())
+	addrHash := h.hash(addr.CompactBytes())
 	prev, err := types.FullAccount(ctx.accounts[addr])
 	if err != nil {
 		return err
@@ -211,7 +211,7 @@ func deleteAccount(ctx *context, loader TrieLoader, addr common.Address) error {
 	h := newHasher()
 	defer h.release()
 
-	addrHash := h.hash(addr.Bytes())
+	addrHash := h.hash(addr.CompactBytes())
 	blob, err := ctx.accountTrie.Get(addrHash.Bytes())
 	if err != nil {
 		return err

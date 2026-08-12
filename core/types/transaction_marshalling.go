@@ -44,6 +44,9 @@ type txJSON struct {
 	R                    *hexutil.Big    `json:"r"`
 	S                    *hexutil.Big    `json:"s"`
 	YParity              *hexutil.Uint64 `json:"yParity,omitempty"`
+	SignatureType        *hexutil.Bytes  `json:"signatureType,omitempty"`
+	SignaturePublicKey   *hexutil.Bytes  `json:"signaturePublicKey,omitempty"`
+	Signature            *hexutil.Bytes  `json:"signature,omitempty"`
 
 	// Blob transaction sidecar encoding:
 	Blobs       []kzg4844.Blob       `json:"blobs,omitempty"`
@@ -81,6 +84,8 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 	enc.Hash = tx.Hash()
 	enc.Type = hexutil.Uint64(tx.Type())
 
+	hasMLDSA87 := hasMLDSA87SignaturePayload(tx)
+
 	// Other fields are set conditionally depending on tx type.
 	switch itx := tx.inner.(type) {
 	case *LegacyTx:
@@ -109,8 +114,10 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 		enc.V = (*hexutil.Big)(itx.V)
 		enc.R = (*hexutil.Big)(itx.R)
 		enc.S = (*hexutil.Big)(itx.S)
-		yparity := itx.V.Uint64()
-		enc.YParity = (*hexutil.Uint64)(&yparity)
+		if !hasMLDSA87 {
+			yparity := itx.V.Uint64()
+			enc.YParity = (*hexutil.Uint64)(&yparity)
+		}
 
 	case *DynamicFeeTx:
 		enc.ChainID = (*hexutil.Big)(itx.ChainID)
@@ -125,8 +132,10 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 		enc.V = (*hexutil.Big)(itx.V)
 		enc.R = (*hexutil.Big)(itx.R)
 		enc.S = (*hexutil.Big)(itx.S)
-		yparity := itx.V.Uint64()
-		enc.YParity = (*hexutil.Uint64)(&yparity)
+		if !hasMLDSA87 {
+			yparity := itx.V.Uint64()
+			enc.YParity = (*hexutil.Uint64)(&yparity)
+		}
 
 	case *BlobTx:
 		enc.ChainID = (*hexutil.Big)(itx.ChainID.ToBig())
@@ -143,13 +152,24 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 		enc.V = (*hexutil.Big)(itx.V.ToBig())
 		enc.R = (*hexutil.Big)(itx.R.ToBig())
 		enc.S = (*hexutil.Big)(itx.S.ToBig())
-		yparity := itx.V.Uint64()
-		enc.YParity = (*hexutil.Uint64)(&yparity)
+		if !hasMLDSA87 {
+			yparity := itx.V.Uint64()
+			enc.YParity = (*hexutil.Uint64)(&yparity)
+		}
 		if sidecar := itx.Sidecar; sidecar != nil {
 			enc.Blobs = itx.Sidecar.Blobs
 			enc.Commitments = itx.Sidecar.Commitments
 			enc.Proofs = itx.Sidecar.Proofs
 		}
+	}
+
+	if hasMLDSA87 {
+		sigType := hexutil.Bytes(tx.SignatureType())
+		publicKey := hexutil.Bytes(tx.SignaturePublicKey())
+		signature := hexutil.Bytes(tx.SignatureBytes())
+		enc.SignatureType = &sigType
+		enc.SignaturePublicKey = &publicKey
+		enc.Signature = &signature
 	}
 	return json.Marshal(&enc)
 }
@@ -190,7 +210,7 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if dec.Input == nil {
 			return errors.New("missing required field 'input' in transaction")
 		}
-		itx.Data = *dec.Input
+		itx.Data = common.CopyBytes(*dec.Input)
 
 		// signature R
 		if dec.R == nil {
@@ -207,7 +227,19 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 			return errors.New("missing required field 'v' in transaction")
 		}
 		itx.V = (*big.Int)(dec.V)
-		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
+		if dec.SignatureType != nil {
+			itx.SignatureType = common.CopyBytes(*dec.SignatureType)
+		}
+		if dec.SignaturePublicKey != nil {
+			itx.SignaturePublicKey = common.CopyBytes(*dec.SignaturePublicKey)
+		}
+		if dec.Signature != nil {
+			itx.Signature = common.CopyBytes(*dec.Signature)
+		}
+		if err := validateSignaturePayload(&itx); err != nil {
+			return err
+		}
+		if !signaturePayloadPresent(itx.SignatureType, itx.SignaturePublicKey, itx.Signature) && (itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0) {
 			if err := sanityCheckSignature(itx.V, itx.R, itx.S, true); err != nil {
 				return err
 			}
@@ -242,7 +274,7 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if dec.Input == nil {
 			return errors.New("missing required field 'input' in transaction")
 		}
-		itx.Data = *dec.Input
+		itx.Data = common.CopyBytes(*dec.Input)
 		if dec.AccessList != nil {
 			itx.AccessList = *dec.AccessList
 		}
@@ -262,7 +294,19 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if err != nil {
 			return err
 		}
-		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
+		if dec.SignatureType != nil {
+			itx.SignatureType = common.CopyBytes(*dec.SignatureType)
+		}
+		if dec.SignaturePublicKey != nil {
+			itx.SignaturePublicKey = common.CopyBytes(*dec.SignaturePublicKey)
+		}
+		if dec.Signature != nil {
+			itx.Signature = common.CopyBytes(*dec.Signature)
+		}
+		if err := validateSignaturePayload(&itx); err != nil {
+			return err
+		}
+		if !signaturePayloadPresent(itx.SignatureType, itx.SignaturePublicKey, itx.Signature) && (itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0) {
 			if err := sanityCheckSignature(itx.V, itx.R, itx.S, false); err != nil {
 				return err
 			}
@@ -301,7 +345,7 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if dec.Input == nil {
 			return errors.New("missing required field 'input' in transaction")
 		}
-		itx.Data = *dec.Input
+		itx.Data = common.CopyBytes(*dec.Input)
 		if dec.AccessList != nil {
 			itx.AccessList = *dec.AccessList
 		}
@@ -321,7 +365,19 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if err != nil {
 			return err
 		}
-		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
+		if dec.SignatureType != nil {
+			itx.SignatureType = common.CopyBytes(*dec.SignatureType)
+		}
+		if dec.SignaturePublicKey != nil {
+			itx.SignaturePublicKey = common.CopyBytes(*dec.SignaturePublicKey)
+		}
+		if dec.Signature != nil {
+			itx.Signature = common.CopyBytes(*dec.Signature)
+		}
+		if err := validateSignaturePayload(&itx); err != nil {
+			return err
+		}
+		if !signaturePayloadPresent(itx.SignatureType, itx.SignaturePublicKey, itx.Signature) && (itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0) {
 			if err := sanityCheckSignature(itx.V, itx.R, itx.S, false); err != nil {
 				return err
 			}
@@ -365,7 +421,7 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if dec.Input == nil {
 			return errors.New("missing required field 'input' in transaction")
 		}
-		itx.Data = *dec.Input
+		itx.Data = common.CopyBytes(*dec.Input)
 		if dec.AccessList != nil {
 			itx.AccessList = *dec.AccessList
 		}
@@ -400,7 +456,19 @@ func (tx *Transaction) UnmarshalJSON(input []byte) error {
 		if overflow {
 			return errors.New("'v' value overflows uint256")
 		}
-		if itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0 {
+		if dec.SignatureType != nil {
+			itx.SignatureType = common.CopyBytes(*dec.SignatureType)
+		}
+		if dec.SignaturePublicKey != nil {
+			itx.SignaturePublicKey = common.CopyBytes(*dec.SignaturePublicKey)
+		}
+		if dec.Signature != nil {
+			itx.Signature = common.CopyBytes(*dec.Signature)
+		}
+		if err := validateSignaturePayload(&itx); err != nil {
+			return err
+		}
+		if !signaturePayloadPresent(itx.SignatureType, itx.SignaturePublicKey, itx.Signature) && (itx.V.Sign() != 0 || itx.R.Sign() != 0 || itx.S.Sign() != 0) {
 			if err := sanityCheckSignature(vbig, itx.R.ToBig(), itx.S.ToBig(), false); err != nil {
 				return err
 			}

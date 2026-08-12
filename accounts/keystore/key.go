@@ -18,8 +18,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,28 +29,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa87"
 	"github.com/google/uuid"
 	"github.com/ixios-io/ixiosSpark/accounts"
 	"github.com/ixios-io/ixiosSpark/common"
 	"github.com/ixios-io/ixiosSpark/crypto"
-
-	"crypto/sha256"
-	"errors"
-
 	"golang.org/x/crypto/pbkdf2"
 )
 
 const (
 	version = 3
+
+	KeyTypeECDSA   = "ecdsa"
+	KeyTypeMLDSA87 = "mldsa87"
 )
 
 type Key struct {
 	Id uuid.UUID // Version 4 "random" for unique id not derived from key data
 	// to simplify lookups we also store the address
 	Address common.Address
-	// we only store privkey as pubkey/address can be derived from it
-	// privkey in this struct is always in plaintext
-	PrivateKey *ecdsa.PrivateKey
+	// key type determines which signing material is present.
+	KeyType string
+	// we only store privkey as pubkey/address can be derived from it.
+	// key material in this struct is always plaintext while unlocked.
+	PrivateKey        *ecdsa.PrivateKey
+	MLDSA87PrivateKey []byte
 }
 
 type keyStore interface {
@@ -65,6 +70,7 @@ type plainKeyJSON struct {
 	PrivateKey string `json:"privatekey"`
 	Id         string `json:"id"`
 	Version    int    `json:"version"`
+	KeyType    string `json:"keytype,omitempty"`
 }
 
 type encryptedKeyJSONV3 struct {
@@ -72,6 +78,7 @@ type encryptedKeyJSONV3 struct {
 	Crypto  CryptoJSON `json:"crypto"`
 	Id      string     `json:"id"`
 	Version int        `json:"version"`
+	KeyType string     `json:"keytype,omitempty"`
 }
 
 type encryptedKeyJSONV1 struct {
@@ -79,6 +86,7 @@ type encryptedKeyJSONV1 struct {
 	Crypto  CryptoJSON `json:"crypto"`
 	Id      string     `json:"id"`
 	Version string     `json:"version"`
+	KeyType string     `json:"keytype,omitempty"`
 }
 
 type cipherparamsJSON struct {
@@ -111,12 +119,74 @@ type CryptoJSON struct {
 	MAC          string           `json:"mac"`
 }
 
+func normalizeKeyType(keyType string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(keyType)) {
+	case "", KeyTypeECDSA:
+		return KeyTypeECDSA, nil
+	case KeyTypeMLDSA87, "ml-dsa87", "ml_dsa87", "mldsa-87", "ml-dsa-87":
+		return KeyTypeMLDSA87, nil
+	default:
+		return "", fmt.Errorf("unsupported key type %q", keyType)
+	}
+}
+
+func (k *Key) resolvedKeyType() string {
+	if keyType, err := normalizeKeyType(k.KeyType); err == nil {
+		return keyType
+	}
+	if len(k.MLDSA87PrivateKey) != 0 {
+		return KeyTypeMLDSA87
+	}
+	return KeyTypeECDSA
+}
+
+func (k *Key) isECDSA() bool {
+	return k.resolvedKeyType() == KeyTypeECDSA
+}
+
+func (k *Key) isMLDSA87() bool {
+	return k.resolvedKeyType() == KeyTypeMLDSA87
+}
+
+func (k *Key) privateKeyBytes() ([]byte, error) {
+	switch k.resolvedKeyType() {
+	case KeyTypeECDSA:
+		if k.PrivateKey == nil {
+			return nil, errors.New("missing ECDSA private key")
+		}
+		return crypto.FromECDSA(k.PrivateKey), nil
+	case KeyTypeMLDSA87:
+		if len(k.MLDSA87PrivateKey) == 0 {
+			return nil, errors.New("missing MLDSA87 private key")
+		}
+		return common.CopyBytes(k.MLDSA87PrivateKey), nil
+	default:
+		return nil, fmt.Errorf("unsupported key type %q", k.KeyType)
+	}
+}
+
+func (k *Key) mldsa87PrivateKey() (*mldsa87.PrivateKey, error) {
+	if !k.isMLDSA87() {
+		return nil, fmt.Errorf("key type %q is not MLDSA87", k.resolvedKeyType())
+	}
+	var privateKey mldsa87.PrivateKey
+	if err := privateKey.UnmarshalBinary(k.MLDSA87PrivateKey); err != nil {
+		return nil, err
+	}
+	return &privateKey, nil
+}
+
 func (k *Key) MarshalJSON() (j []byte, err error) {
+	keyBytes, err := k.privateKeyBytes()
+	if err != nil {
+		return nil, err
+	}
 	jStruct := plainKeyJSON{
-		hex.EncodeToString(k.Address[:]),
-		hex.EncodeToString(crypto.FromECDSA(k.PrivateKey)),
-		k.Id.String(),
-		version,
+		Address:    hex.EncodeToString(k.Address[:]),
+		PrivateKey: hex.EncodeToString(keyBytes),
+		Id:         k.Id.String(),
+		Version:    version,
+		KeyType:    k.resolvedKeyType(),
 	}
 	j, err = json.Marshal(jStruct)
 	return j, err
@@ -134,17 +204,54 @@ func (k *Key) UnmarshalJSON(data []byte) error {
 	}
 	k.Id = u
 
+	keyType, err := normalizeKeyType(keyJSON.KeyType)
+	if err != nil {
+		return err
+	}
+	k.KeyType = keyType
+
 	addr, err := hex.DecodeString(keyJSON.Address)
 	if err != nil {
 		return err
 	}
 	k.Address = common.BytesToAddress(addr)
 
-	privkey, err := crypto.HexToECDSA(keyJSON.PrivateKey)
-	if err != nil {
-		return err
+	switch keyType {
+	case KeyTypeECDSA:
+		privkey, err := crypto.HexToECDSA(keyJSON.PrivateKey)
+		if err != nil {
+			return err
+		}
+		derivedAddress := crypto.PubkeyToAddress(privkey.PublicKey)
+		if k.Address != (common.Address{}) && k.Address != derivedAddress {
+			return fmt.Errorf("key content mismatch: have account %x, want %x", derivedAddress, k.Address)
+		}
+		k.Address = derivedAddress
+		k.PrivateKey = privkey
+		k.MLDSA87PrivateKey = nil
+	case KeyTypeMLDSA87:
+		privateKeyBytes, err := hex.DecodeString(keyJSON.PrivateKey)
+		if err != nil {
+			return err
+		}
+		var privateKey mldsa87.PrivateKey
+		if err := privateKey.UnmarshalBinary(privateKeyBytes); err != nil {
+			return err
+		}
+		publicKey, ok := privateKey.Public().(*mldsa87.PublicKey)
+		if !ok {
+			return errors.New("invalid MLDSA87 public key type")
+		}
+		derivedAddress := crypto.MLDSA87PubkeyToAddress(publicKey.Bytes())
+		if k.Address != (common.Address{}) && k.Address != derivedAddress {
+			return fmt.Errorf("key content mismatch: have account %x, want %x", derivedAddress, k.Address)
+		}
+		k.Address = derivedAddress
+		k.PrivateKey = nil
+		k.MLDSA87PrivateKey = common.CopyBytes(privateKeyBytes)
+	default:
+		return fmt.Errorf("unsupported key type %q", keyType)
 	}
-	k.PrivateKey = privkey
 
 	return nil
 }
@@ -157,9 +264,27 @@ func newKeyFromECDSA(privateKeyECDSA *ecdsa.PrivateKey) *Key {
 	key := &Key{
 		Id:         id,
 		Address:    crypto.PubkeyToAddress(privateKeyECDSA.PublicKey),
+		KeyType:    KeyTypeECDSA,
 		PrivateKey: privateKeyECDSA,
 	}
 	return key
+}
+
+func newKeyFromMLDSA87(privateKeyMLDSA87 *mldsa87.PrivateKey) *Key {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		panic(fmt.Sprintf("Could not create random uuid: %v", err))
+	}
+	publicKey, ok := privateKeyMLDSA87.Public().(*mldsa87.PublicKey)
+	if !ok {
+		panic("unexpected MLDSA87 public key type")
+	}
+	return &Key{
+		Id:                id,
+		Address:           crypto.MLDSA87PubkeyToAddress(publicKey.Bytes()),
+		KeyType:           KeyTypeMLDSA87,
+		MLDSA87PrivateKey: privateKeyMLDSA87.Bytes(),
+	}
 }
 
 // NewKeyForDirectICAP generates a key whose address fits into < 155 bits so it can fit
@@ -184,15 +309,38 @@ func NewKeyForDirectICAP(rand io.Reader) *Key {
 }
 
 func newKey(rand io.Reader) (*Key, error) {
-	privateKeyECDSA, err := ecdsa.GenerateKey(crypto.S256(), rand)
+	return newKeyWithType(rand, KeyTypeECDSA)
+}
+
+func newKeyWithType(rand io.Reader, keyType string) (*Key, error) {
+	normalizedKeyType, err := normalizeKeyType(keyType)
 	if err != nil {
 		return nil, err
 	}
-	return newKeyFromECDSA(privateKeyECDSA), nil
+	switch normalizedKeyType {
+	case KeyTypeECDSA:
+		privateKeyECDSA, err := ecdsa.GenerateKey(crypto.S256(), rand)
+		if err != nil {
+			return nil, err
+		}
+		return newKeyFromECDSA(privateKeyECDSA), nil
+	case KeyTypeMLDSA87:
+		_, privateKeyMLDSA87, err := mldsa87.GenerateKey(rand)
+		if err != nil {
+			return nil, err
+		}
+		return newKeyFromMLDSA87(privateKeyMLDSA87), nil
+	default:
+		return nil, fmt.Errorf("unsupported key type %q", keyType)
+	}
 }
 
 func storeNewKey(ks keyStore, rand io.Reader, auth string) (*Key, accounts.Account, error) {
-	key, err := newKey(rand)
+	return storeNewKeyWithType(ks, rand, auth, KeyTypeECDSA)
+}
+
+func storeNewKeyWithType(ks keyStore, rand io.Reader, auth string, keyType string) (*Key, accounts.Account, error) {
+	key, err := newKeyWithType(rand, keyType)
 	if err != nil {
 		return nil, accounts.Account{}, err
 	}
@@ -201,7 +349,7 @@ func storeNewKey(ks keyStore, rand io.Reader, auth string) (*Key, accounts.Accou
 		URL:     accounts.URL{Scheme: KeyStoreScheme, Path: ks.JoinPath(keyFileName(key.Address))},
 	}
 	if err := ks.StoreKey(a.URL.Path, key, auth); err != nil {
-		zeroKey(key.PrivateKey)
+		zeroKeyMaterial(key)
 		return nil, a, err
 	}
 	return key, a, err
@@ -316,9 +464,10 @@ func decryptKey(fileContent []byte, password string) (key *Key, err error) {
 	key = &Key{
 		Id:         uuid.UUID{},
 		Address:    crypto.PubkeyToAddress(ecKey.PublicKey),
+		KeyType:    KeyTypeECDSA,
 		PrivateKey: ecKey,
 	}
-	derivedAddr := hex.EncodeToString(key.Address.Bytes()) // needed because .Hex() gives leading "0x"
+	derivedAddr := hex.EncodeToString(key.Address[common.AddressLength-common.LegacyECDSAAirdropAddressHashLength:])
 	expectedAddr := preSaleKeyStruct.EthAddr
 	if derivedAddr != expectedAddr {
 		err = fmt.Errorf("decrypted addr '%s' not equal to expected addr '%s'", derivedAddr, expectedAddr)

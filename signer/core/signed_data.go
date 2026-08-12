@@ -195,7 +195,7 @@ func (api *SignerAPI) determineSignatureFormat(ctx context.Context, contentType 
 // with the given validator.
 // hash = keccak256("\x19\x00"${address}${data}).
 func SignTextValidator(validatorData apitypes.ValidatorData) (hexutil.Bytes, string) {
-	msg := fmt.Sprintf("\x19\x00%s%s", string(validatorData.Address.Bytes()), string(validatorData.Message))
+	msg := fmt.Sprintf("\x19\x00%s%s", string(validatorData.Address.CompactBytes()), string(validatorData.Message))
 	return crypto.Keccak256([]byte(msg)), msg
 }
 

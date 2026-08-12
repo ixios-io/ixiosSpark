@@ -47,7 +47,7 @@ func (sys *FilterSystem) NewRangeFilter(begin, end int64, addresses []common.Add
 	if len(addresses) > 0 {
 		filter := make([][]byte, len(addresses))
 		for i, address := range addresses {
-			filter[i] = address.Bytes()
+			filter[i] = address.CompactBytes()
 		}
 		filters = append(filters, filter)
 	}

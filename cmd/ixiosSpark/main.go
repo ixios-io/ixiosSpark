@@ -14,14 +14,15 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 
+	"github.com/cockroachdb/pebble"
 	"github.com/ixios-io/ixiosSpark/ixios"
 
 	// "go.opentelemetry.io/otel"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -168,6 +169,65 @@ var (
 
 var app = flags.NewApp("IxiosSpark command line interface")
 
+func rm_snapshots() {
+	if len(os.Args) < 2 {
+		fmt.Fprintf(os.Stderr, "Usage: %s /path/to/chaindata\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  e.g. %s ~/.ixiosSpark/ixios/chaindata\n", os.Args[0])
+		os.Exit(1)
+	}
+	dbPath := os.Args[1]
+
+	db, err := pebble.Open(dbPath, &pebble.Options{ReadOnly: false})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	prefix := []byte("clique-")
+	count := 0
+
+	iter, err := db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: func() []byte {
+			upper := make([]byte, len(prefix))
+			copy(upper, prefix)
+			upper[len(upper)-1]++
+			return upper
+		}(),
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create iterator: %v\n", err)
+		os.Exit(1)
+	}
+
+	batch := db.NewBatch()
+	for iter.First(); iter.Valid(); iter.Next() {
+		key := iter.Key()
+		if !bytes.HasPrefix(key, prefix) {
+			break
+		}
+		if err := batch.Delete(key, pebble.Sync); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to delete key: %v\n", err)
+			os.Exit(1)
+		}
+		count++
+	}
+	iter.Close()
+
+	if count == 0 {
+		fmt.Println("No clique snapshot entries found.")
+		return
+	}
+
+	if err := batch.Commit(pebble.Sync); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to commit batch: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Deleted %d clique snapshot entries. Restart your node.\n", count)
+}
+
 func init() {
 	// Initialize the CLI app and start
 	app.Action = ixiosCLI
@@ -235,8 +295,8 @@ func prepare(ctx *cli.Context) {
 	case ctx.IsSet(AetherForgeFlag.Name):
 		log.Info("Starting ixiosSpark on AetherForge testnet...")
 
-	case ctx.IsSet(NeoDawnFlag.Name):
-		log.Info("Starting ixiosSpark on NeoDawn testnet...")
+	case ctx.IsSet(AetherNexusFlag.Name):
+		log.Info("Starting ixiosSpark on AetherNexus testnet...")
 
 	case ctx.IsSet(DeveloperFlag.Name):
 		log.Info("Starting ixiosSpark in ephemeral dev mode...")
@@ -258,24 +318,12 @@ func prepare(ctx *cli.Context) {
 
 	case !ctx.IsSet(NetworkIdFlag.Name):
 		// Make sure we're not on any supported preconfigured testnet either
-		if !ctx.IsSet(NeoDawnFlag.Name) &&
+		if !ctx.IsSet(AetherNexusFlag.Name) &&
 			!ctx.IsSet(AetherForgeFlag.Name) &&
 			!ctx.IsSet(AetherBloomFlag.Name) &&
 			!ctx.IsSet(DeveloperFlag.Name) {
 			// We're really on mainnet.
-			log.Info("Starting on Ixios L1 mainnet...")
-		}
-	}
-	// If we're a full node on mainnet without --cache specified, bump default cache allowance
-	if !ctx.IsSet(CacheFlag.Name) && !ctx.IsSet(NetworkIdFlag.Name) {
-		// Make sure we're not on any supported preconfigured testnet either
-		if !ctx.IsSet(NeoDawnFlag.Name) &&
-			!ctx.IsSet(AetherForgeFlag.Name) &&
-			!ctx.IsSet(AetherBloomFlag.Name) &&
-			!ctx.IsSet(DeveloperFlag.Name) {
-			// Nope, we're really on mainnet. Bump that cache up!
-			log.Info("Bumping default cache on mainnet", "provided", ctx.Int(CacheFlag.Name), "updated", 4096)
-			ctx.Set(CacheFlag.Name, strconv.Itoa(4096))
+			log.Info("Starting on Ixios mainnet...")
 		}
 	}
 }
