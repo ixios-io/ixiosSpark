@@ -588,7 +588,6 @@ func (w *worker) taskLoop() {
 			log.Warn("Sealer worker exit channel closed")
 			interrupt()
 			return
-		default:
 		}
 	}
 }
