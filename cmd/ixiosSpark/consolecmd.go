@@ -15,7 +15,6 @@ package main
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/ixios-io/ixiosSpark/console"
 	"github.com/ixios-io/ixiosSpark/internal/flags"
@@ -53,8 +52,7 @@ func localConsole(ctx *cli.Context) error {
 	// Create and start the node based on the CLI flags
 	prepare(ctx)
 	stack, backend := makeFullNode(ctx)
-	time.Sleep(100 * time.Millisecond)
-	go startNode(ctx, stack, backend, true)
+	startNode(ctx, stack, backend, true)
 	defer stack.Close()
 
 	// Attach to the newly started node and create the JavaScript console.
