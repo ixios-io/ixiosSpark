@@ -37,7 +37,7 @@ var (
 	// MainnetChainConfig is the chain parameters to run a node on the main network.
 	MainnetChainConfig = &ChainConfig{
 		ChainID:             big.NewInt(1),
-		AegisBlock:          big.NewInt(int64(29_376_000)),
+		AegisBlock:          big.NewInt(int64(30_240_000)),
 		HomesteadBlock:      big.NewInt(0),
 		EIP150Block:         big.NewInt(0),
 		EIP155Block:         big.NewInt(0),

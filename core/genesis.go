@@ -518,7 +518,7 @@ func DefaultGenesisBlock() *Genesis {
 	return &Genesis{
 		Config: &params.ChainConfig{
 			ChainID:             big.NewInt(1),
-			AegisBlock:          big.NewInt(int64(29_376_000)),
+			AegisBlock:          big.NewInt(int64(30_240_000)),
 			HomesteadBlock:      big.NewInt(0),
 			EIP150Block:         big.NewInt(0),
 			EIP155Block:         big.NewInt(0),
